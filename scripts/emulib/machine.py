@@ -18,6 +18,11 @@ SYX = str(paths.SYX)
 SNAP = str(paths.SNAPSHOTS / "ui1200M.snap")
 
 STACK, SCRATCH = 0x46A00000, 0x46A10000
+# Keep the synthetic C-call stack away from the lower edge of its mapped
+# page.  Firmware routines are allowed to push a normal prologue frame; a
+# stack pointer at STACK would make that first push touch the unmapped page
+# below it and turn a harness call into a misleading emulator fault.
+CALL_STACK = STACK + 0x800
 FLAGS = dict(unblock=True, softfloat=True, bitmap=True, dsp=True,
              weakptr=True, slc=True, sdgate=True, esdhc=True)
 
@@ -39,7 +44,7 @@ class Machine:
         # allocator, and the two must not share a name.
         self.m, self.ev, self.st, self.pc, self.inq, self.hook_at = built
         self.uc = self.m.uc
-        self.ret = STACK + 0x800
+        self.ret = STACK + 0x1000
         self.at = SCRATCH
         self.count = 0
 
@@ -122,8 +127,8 @@ class Machine:
 
         frame = struct.pack(">I", self.ret) + b"".join(
             struct.pack(">I", a & 0xFFFFFFFF) for a in args)
-        self.write(STACK, frame)
-        self.uc.reg_write(UC_M68K_REG_A7, STACK)
+        self.write(CALL_STACK, frame)
+        self.uc.reg_write(UC_M68K_REG_A7, CALL_STACK)
         self.uc.reg_write(UC_M68K_REG_A6, 0)
         self.uc.emu_start(fn, self.ret, count=limit)
         return self.uc.reg_read(UC_M68K_REG_D0)

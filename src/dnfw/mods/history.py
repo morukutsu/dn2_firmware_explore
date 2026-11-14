@@ -149,6 +149,68 @@ HISTORY: dict[str, tuple[Release, ...]] = {
             "RAM. The LFOs operate as before.",
         )),
     ) + PUBLISHED,
+    "lfopreview": (
+        Release("0.1.12", "2026-11-14", (
+            "The preview rail starts at the SYN box, below the title.",
+            "Waverider and LFO Preview can share the audio frame and redraw paths.",
+        )),
+        Release("0.1.11", "2026-11-14", (
+            "The preview associates each track's evaluator output with its newest active voice during playback.",
+            "The renderer keeps its return address on the allocated stack during audio interrupts.",
+        )),
+        Release("0.1.10", "2026-11-14", (
+            "The evaluator hook preserves its stack frame across sample capture.",
+            "A fallback reference from another track no longer clears the active owner's preview sample.",
+        )),
+        Release("0.1.9", "2026-11-14", (
+            "The live renderer now identifies the selected LFO from its real LFO-page view, and the final framebuffer check confirms the rail is visible on the emulator page.",
+        )),
+        Release("0.1.8", "2026-11-14", (
+            "The post-render draw call now receives the renderer's original view, canvas, coordinates, "
+            "parameter id and value, so the DEP rail is drawn at the intended control position.",
+        )),
+        Release("0.1.7", "2026-11-14", (
+            "The renderer wrapper preserves the stock argument layout while returning through the "
+            "prototype, so the emulator can exercise the post-control draw without corrupting the "
+            "renderer stack.",
+        )),
+        Release("0.1.6", "2026-11-14", (
+            "The rail is drawn from the stock LFO control renderer after the control itself is painted, "
+            "so the prototype no longer relies on a generic parameter-drawer tail that the live MOD page "
+            "does not always call.",
+        )),
+        Release("0.1.5", "2026-11-14", (
+            "A voice that changes track ownership no longer carries its previous track's cached sample "
+            "onto the new track while the next evaluator pass is pending.",
+        )),
+        Release("0.1.4", "2026-11-14", (
+            "The selected LFO is now identified from the real MOD page view rather than the shared "
+            "parameter drawer, so the preview no longer depends on the wrong page object's vtable or "
+            "the stock SLEW classifier.",
+            "The prototype no longer patches the SLEW classifier or generic page setter; its mode-header "
+            "capture is guarded independently and leaves those stock paths unchanged.",
+        )),
+        Release("0.1.3", "2026-11-13", (
+            "The preview no longer keeps a dot from a voice after that voice is reused, released or changes "
+            "track. It also accepts the evaluator's track association while the stock owner map is between updates.",
+            "Fast LFO bands now follow a recent sample window, so a previous sweep does not stay on the rail "
+            "after you change its depth, fade or speed.",
+            "The emulator preparation command now writes the device profile needed to open a rebuilt prototype "
+            "in digikit's GUI.",
+        )),
+        Release("0.1.2", "2026-11-13", (
+            "The emulator prototype now preserves the stock UI poll and frame-call shapes while drawing the "
+            "traced LFO1-3 DEP cells on the selected page.",
+            "The release includes the reproducible GCC 13.3 build and a guarded synthetic-dot capture harness; "
+            "MIDI, LFO4 and browser packaging remain deferred.",
+        )),
+        Release("0.1.1", "2026-11-13", (
+            "Developer prototype: the selected synth LFO1, LFO2 or LFO3 page shows a live signed "
+            "modulation contribution on a fixed bipolar rail in the emulator.",
+            "This release is command-line and emulator only. MIDI, LFO4 and browser packaging are "
+            "deferred.",
+        )),
+    ) + UNPUBLISHED,
     "lfowaves": (
         Release("1.0.1", "2026-10-21", (
             "On the MOD page, the glyph of a new waveform now mirrors left to right when SPD is "

@@ -35,6 +35,10 @@
   "sha256": "3bc6880f54d8abb1c4d5dde8a099a0f1cb8fc5920d57587c2f17f6cdfe1edb39",
   "version": "1.0.1"
  },
+ "lfopreview": {
+  "sha256": "4a34de270b1905032a6f7141d97f7d830a57ed1dd322ac841952c92ddae565f0",
+  "version": "0.1.12"
+ },
  "lfowaves": {
   "sha256": "9154eda8236c32065e37f3ea2f0b8c8c2a7367a29c04090f941a06a25fbb39e0",
   "version": "1.0.1"

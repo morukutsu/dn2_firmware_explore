@@ -118,6 +118,31 @@ One caveat worth knowing before it wastes an hour: building a native extension
 against a `/mnt/c` path is slow and occasionally trips on permissions. Put the
 **virtualenv inside WSL's own filesystem** even when the source is on `/mnt/c`.
 
+### macOS: keep GCC 16, select a project-local GCC 13.3
+
+The ColdFire C builder prefers `m68k-linux-gnu-*` tools when they are on
+`PATH`. On this Mac the default `m68k-elf-gcc` is GCC 16.2.0, and the Waverider
+compose test reaches the build but then emits an instruction that the
+ColdFire V4e cannot execute:
+
+```
+this build contains 1 instruction(s) the ColdFire V4e cannot execute -- a scaled index of 8, which is a 68020 mode:
+    4670d482:  43f6 be00       lea %fp@(0,%a3:l:8),%a1
+```
+
+Use the checked-in wrapper to install/select a keg-only GCC 13.3 and binutils
+2.42 only for the command being run. It does not replace or relink the system
+compiler:
+
+```
+./tools/with_m68k_gcc13.sh m68k-linux-gnu-gcc -dumpfullversion -dumpversion
+./tools/with_m68k_gcc13.sh ./.venv/bin/pytest -m "not slow"
+```
+
+The wrapper reports `13.3.0` and the Waverider compose test passes through it.
+The linker also uses `--no-relax` so the generated image remains byte-stable
+across the supported toolchain.
+
 ### The CRLF trap — hit immediately, and it will recur
 
 A repository cloned by Git for Windows with `core.autocrlf=true` — the default

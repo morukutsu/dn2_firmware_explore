@@ -33,11 +33,12 @@ the 132 MHz the SSI lane paces against. Needs a panel_drive with `service_forced
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import pathlib
-import subprocess
 import sys
+import tempfile
+
+from emulib import playback
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -48,7 +49,7 @@ PANEL_CANDIDATES = (
     ROOT.parent / "digikit-wt-forced/out/target/release/examples/panel_drive.exe",
     ROOT.parent / "digikit-rust/out/native/target-host/release/examples/panel_drive.exe",
 )
-EXCHANGE = "0x400cf7be"      # the audio ISR's send/receive to the DSP; argument 1 is the frame
+EXCHANGE = hex(playback.EXCHANGE_DN2_111)
 NO, RECORD, PLAY, STOP, TRK, TRIG1 = 12, 19, 20, 21, 16, 25
 TRIG_PAGE, FUNC, DOWN, ARP, STACK = 1, 17, 14, 51, 53    # the firmware's names: TRIG, ..., STACK
 ENCODER_A, ENCODER_E, ENCODER_G = 1, 5, 7
@@ -62,7 +63,7 @@ def panel_drive() -> pathlib.Path:
     for path in ([pathlib.Path(chosen)] if chosen else []) + list(PANEL_CANDIDATES):
         if path.exists():
             return path
-    raise SystemExit("panel_drive.exe not found; set PANEL_DRIVE")
+    return playback.find_runner()
 
 
 def turn(encoder: int, units: int) -> list[str]:
@@ -124,19 +125,20 @@ def script(tracks: dict[int, list[int]], run: str, *, notes: dict[int, int] | No
 
 
 def play(build: pathlib.Path, tracks: dict[int, list[int]], run: str = "700M",
-         ssi_hz: str = "96000", keep: pathlib.Path | None = None, **entry) -> list[SF.NoteEvent]:
+         ssi_hz: str = "96000", keep: pathlib.Path | None = None,
+         *, base: pathlib.Path | None = None, **entry) -> list[SF.NoteEvent]:
     """Boot BUILD, play the trigs, and return the note events; raises RuntimeError on a fault.
     ENTRY is `script`'s notes, chord, chord_length and arp."""
-    cmd = [str(panel_drive()), str(build), "--ssi-hz", ssi_hz,
-           "--capture", f"{EXCHANGE}:1:48", "--steps", ",".join(script(tracks, run, **entry))]
-    done = subprocess.run(cmd, capture_output=True, text=True, timeout=1500)
-    if not done.stdout.strip():
-        raise RuntimeError(done.stderr[-300:])
-    result = json.loads(done.stdout)
-    if keep:
-        keep.write_text(done.stdout)
-    if result["outcome"] != "done":
-        raise RuntimeError(f"fault: {result['fault']}")
+    with tempfile.TemporaryDirectory(prefix="seqplay-") as tmp:
+        out = pathlib.Path(tmp)
+        try:
+            result = playback.run(build, script(tracks, run, **entry), out,
+                                  runner=panel_drive(), base=base, ssi_hz=int(ssi_hz),
+                                  capture=(f"{playback.EXCHANGE_DN2_111:#x}:1:48",))
+        finally:
+            raw = out / "runner.json"
+            if keep and raw.exists():
+                keep.write_bytes(raw.read_bytes())
     return SF.events(result["captures"])
 
 
@@ -158,6 +160,7 @@ def signature(found: list[SF.NoteEvent]) -> list[tuple]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("build", type=pathlib.Path)
+    ap.add_argument("--base", type=pathlib.Path, help="stock SysEx for a patched build")
     ap.add_argument("--trigs", default="1,5,9,13", help="steps of track 1, 1-based, ascending")
     ap.add_argument("--track", action="append", default=[], metavar="N:STEPS",
                     help="another track's steps, e.g. 2:3,11 (repeatable)")
@@ -175,7 +178,7 @@ def main() -> int:
     notes = {int(step): int(semitones) for step, semitones in (spec.split(":") for spec in a.note)}
     chord = [int(i) for i in a.chord.split(",")] if a.chord else None
     try:
-        found = play(a.build, tracks, a.run, a.ssi_hz, a.json, notes=notes, chord=chord,
+        found = play(a.build, tracks, a.run, a.ssi_hz, a.json, base=a.base, notes=notes, chord=chord,
                      chord_length=a.chord_length, arp=a.arp)
     except RuntimeError as error:
         print(error)

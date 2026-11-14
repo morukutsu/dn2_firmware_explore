@@ -27,6 +27,7 @@ from ..mods import history
 from ..mods import layermidi as layermidi_mod
 from ..mods import lfo4 as lfo4_mod
 from ..mods import lfolength as lfolength_mod
+from ..mods import lfopreview as lfopreview_mod
 from ..mods import lfowaves as lfowaves_mod
 from ..mods import midiarp as midiarp_mod
 from ..mods import moddest as moddest_mod
@@ -54,6 +55,7 @@ REGISTRY = {transients_mod.ID: transients_mod,
             degreetranspose_mod.ID: degreetranspose_mod,
             lfo4_mod.ID: lfo4_mod,
             lfolength_mod.ID: lfolength_mod,
+            lfopreview_mod.ID: lfopreview_mod,
             songguard_mod.ID: songguard_mod,
             waverider_mod.ID: waverider_mod,
             reloadconfirm_mod.ID: reloadconfirm_mod,

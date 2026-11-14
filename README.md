@@ -39,6 +39,7 @@ Before you do this, keep a copy of the project.
 | `transients` | Replace the FM drum transient bank with your own samples | confirmed on hardware | yes |
 | `songguard` | A song with a damaged row count loads as empty instead of halting the instrument (a stock bug) | confirmed on hardware | no |
 | `lfolength` | The LFO ONE/HALF fix: TRIG MODE ONE and HALF run one cycle / half a cycle from the start phase and hold the value they reached, on audio and MIDI tracks (two stock bugs; supersedes `lfohold`) | confirmed on hardware (2026-10-09, audio track); MIDI tracks in the emulator | yes |
+| `lfopreview` | Developer prototype: a live signed LFO1-3 contribution rail on the selected synth LFO page | emulator only; not for an instrument | no |
 | `waverider` | A sixth synth machine: two wavetable oscillators with MOVE, a sub-oscillator and noise, with tables from the +Drive (alpha) | alpha, confirmed on hardware (2026-10-14) | yes |
 | ~~`lfohold`~~ | Superseded by `lfolength` (2026-10-09): the hold, audio tracks only. Kept in the tree for the record, not offered | confirmed on hardware (2026-10-08) | no |
 
