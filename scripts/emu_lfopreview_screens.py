@@ -28,7 +28,6 @@ from emulib.machine import Machine  # noqa: E402
 from emulib.panel import MOD  # noqa: E402
 
 LIVE_KIT = 0x800052A0
-OWNER = 0x80005308
 VOICE_SOUND = 0x800052A8
 ACTIVE_TRACK = 0x42431A6C
 TICKS = 0x466758B0
@@ -54,10 +53,7 @@ def inject(machine: Machine, symbols: dict[str, int]) -> None:
     preview arrays after the normal run has settled.
     """
     machine.write(ACTIVE_TRACK, b"\0")
-    # The stock owner map stores the track number directly.  Voice zero is
-    # assigned to selected track zero for this visual seed.
     kit = machine.long(LIVE_KIT)
-    machine.write(OWNER, struct.pack(">I", 0))
     machine.write(VOICE_SOUND, struct.pack(">I", kit + SOUND_BASE))
     now = machine.long(TICKS)
     sample = 0x1000
@@ -65,12 +61,8 @@ def inject(machine: Machine, symbols: dict[str, int]) -> None:
     machine.write(symbols["lfp_sample"], struct.pack(">i", sample))
     machine.write(symbols["lfp_sample_tick"], struct.pack(">I", now))
     machine.write(symbols["lfp_valid"], b"\1")
-    machine.write(symbols["lfp_track_voice"], b"\0")
     machine.write(symbols["lfp_voice_active"], b"\1")
-    machine.write(symbols["lfp_voice_released"], b"\0")
-    machine.write(symbols["lfp_voice_track"], b"\0")
     machine.write(symbols["lfp_note_serial"], struct.pack(">I", 1))
-    machine.write(symbols["lfp_owner_seen"], struct.pack(">I", 0))
     machine.write(symbols["lfp_sound_seen"], struct.pack(">I", kit + SOUND_BASE))
     machine.write(symbols["lfp_band_lo"], struct.pack(">i", sample))
     machine.write(symbols["lfp_band_hi"], struct.pack(">i", sample))
@@ -222,7 +214,7 @@ def main() -> int:
         parser.error("--inject requires --build, not --stock")
     if args.disable_hook and not args.stock:
         stock_sites = {
-            "engine": (0x40137AB4, bytes.fromhex("2540006c7356")),
+            "engine": (0x40137AA6, bytes.fromhex("0681ffffc000d281a0010800a1c0")),
             "frame": (0x40025EB2, bytes.fromhex("4ab94058e544")),
             "renderer": (0x4006448A, bytes.fromhex("4fefffb0102f0077")),
             "poll": (0x4002E46A, bytes.fromhex("588f4a006774")),

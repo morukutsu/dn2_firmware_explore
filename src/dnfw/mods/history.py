@@ -150,6 +150,11 @@ HISTORY: dict[str, tuple[Release, ...]] = {
         )),
     ) + PUBLISHED,
     "lfopreview": (
+        Release("0.1.13", "2026-11-15", (
+            "The dot follows the selected note's own evaluator row and keeps a stable voice choice for a chord.",
+            "Signed depth and wave values preserve the direction and movement of the preview.",
+            "The rail extends down beside LEV.",
+        )),
         Release("0.1.12", "2026-11-14", (
             "The preview rail starts at the SYN box, below the title.",
             "Waverider and LFO Preview can share the audio frame and redraw paths.",

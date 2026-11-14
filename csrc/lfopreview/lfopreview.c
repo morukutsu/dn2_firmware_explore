@@ -1,13 +1,11 @@
 /* LFO preview developer prototype for Digitone II OS 1.11.
  *
- * The engine hook is deliberately downstream of evaluator A's final depth and
- * fade multiply and upstream of the destination write/clamp.  It therefore
- * records the signed contribution that stock is about to add, rather than the
- * aggregate live-minus-target value used by the earlier research probe.
+ * Capture the stock fade-scaled wave and signed depth at the final multiply
+ * of each voice row. Preview arithmetic stays separate from destination writes.
  *
  * The frame hook supplies note-on and note-off events. The evaluator hook
- * associates each track's contribution with the newest active voice using
- * the stock owner map, so the UI can display it without a second evaluation.
+ * records each active voice's own output. The UI picks one voice by sound
+ * ownership and note order, with the lowest voice index breaking chord ties.
  */
 #include "../include/dn2_111.h"
 #include "../ui/canvas.h"
@@ -23,15 +21,11 @@ typedef signed char i8;
 #define TICKS               (*(volatile u32 *)0x466758B0u)
 #define TEMPO_X120          (*(volatile u16 *)0x800026C2u)
 #define LIVE_KIT            (*(volatile u32 *)0x800052A0u)
-#define OWNER(v)            (((volatile u32 *)0x80005308u)[v])
 #define VOICE_SOUND(v)      (((volatile u32 *)0x800052A8u)[v])
-#define TARGETS             0x80003AF0u
-#define MIRROR_PREFIX       34u
-#define MIRROR_STRIDE       202u
 
 #define DEP_ID_FIRST        83
 #define RAIL_X              18
-#define RAIL_TOP            13
+#define RAIL_TOP            7
 #define RAIL_BOTTOM         49
 #define RAIL_CENTRE         ((RAIL_TOP + RAIL_BOTTOM) / 2)
 #define RAIL_HALF           ((RAIL_BOTTOM - RAIL_TOP) / 2)
@@ -61,14 +55,12 @@ u8 lfp_band_count[SAMPLES];
 u32 lfp_sample_tick[SAMPLES];
 u32 lfp_band_tick[SAMPLES];
 u32 lfp_band_key[SAMPLES];
-u32 lfp_owner_seen[VOICES];
 u32 lfp_sound_seen[VOICES];
 u32 lfp_note_serial[VOICES];
 u8 lfp_voice_active[VOICES];
-u8 lfp_voice_released[VOICES];
-i8 lfp_track_voice[TRACKS];
-i8 lfp_voice_track[VOICES];
+u8 lfp_tier[SAMPLES];
 u32 lfp_serial;
+static u32 previous_on;
 u32 lfp_kit_seen;
 u8 lfp_ready;
 /* UI state.  A non-LFO widget call clears shown_lfo; the final DEP widget on
@@ -84,7 +76,7 @@ static int index_of(int voice, int lfo)
     return voice * LFOS + lfo;
 }
 
-static int mirror_word(int track, int slot);
+static int rate_tier(const u16 *params, int depth);
 
 static void reset_band(int at)
 {
@@ -113,16 +105,12 @@ static void clear_all(void)
     int voice;
     for (voice = 0; voice < VOICES; voice++) {
         clear_voice(voice);
-        lfp_owner_seen[voice] = 0xffffffffu;
         lfp_sound_seen[voice] = 0;
         lfp_note_serial[voice] = 0;
         lfp_voice_active[voice] = 0;
-        lfp_voice_released[voice] = 0;
-        lfp_voice_track[voice] = -1;
     }
-    for (voice = 0; voice < TRACKS; voice++)
-        lfp_track_voice[voice] = -1;
     lfp_serial = 0;
+    previous_on = 0;
 }
 
 static void ensure_ready(void)
@@ -147,21 +135,12 @@ static void invalidate_kit(void)
     lfp_kit_seen = kit;
 }
 
-/* 0x80005308 is the existing per-voice track map.  It is updated by stock
- * voice delivery and uses 126/127 for its empty/non-live sentinels.  Keep the
- * mapping direct here.  The live-kit pointer and sound stride are useful for
- * other engine paths, but must not be mixed into this owner lookup. */
-static int owner_track(u32 owner)
-{
-    return owner < TRACKS ? (int)owner : -1;
-}
-
 /* A frame note-on is one generation.  The frame's second mask is the measured
  * note-off/release event.  A release is not treated as active, so a remaining
  * voice wins immediately and the last voice alone leaves only the rail. */
 void lfp_note_frame(const u8 *frame)
 {
-    u32 on, off;
+    u32 on, off, started;
     int voice;
     ensure_ready();
     invalidate_kit();
@@ -169,31 +148,28 @@ void lfp_note_frame(const u8 *frame)
         return;
     on = ((u32)frame[34] << 8) | frame[35];
     off = ((u32)frame[36] << 8) | frame[37];
+    started = on & (~previous_on | off);
+    previous_on = on;
+    if (started)
+        ++lfp_serial;
     for (voice = 0; voice < VOICES; voice++) {
         u32 bit = 1u << voice;
-        if (off & bit) {
+        if (off & bit)
             lfp_voice_active[voice] = 0;
-            lfp_voice_released[voice] = 1;
-        }
-        if (on & bit) {
+        if (started & bit) {
             clear_voice(voice);
-            lfp_owner_seen[voice] = 0xffffffffu;
             lfp_sound_seen[voice] = 0;
-            lfp_voice_track[voice] = -1;
             lfp_voice_active[voice] = 1;
-            lfp_voice_released[voice] = 0;
-            lfp_note_serial[voice] = ++lfp_serial;
+            lfp_note_serial[voice] = lfp_serial;
         }
     }
 }
 
-static u32 preview_band_key(int track, int lfo)
+static u32 preview_band_key(const u16 *params, int depth)
 {
-    int base = 1 + 8 * lfo;
-    u32 key = (u32)mirror_word(track, base);
-    key = (key << 16) ^ (u32)mirror_word(track, base + 1);
-    key ^= (u32)mirror_word(track, base + 2) << 1;
-    key ^= (u32)mirror_word(track, base + 7) << 17;
+    u32 key = ((u32)params[0] << 16) | params[1];
+    key ^= (u32)params[2] << 1;
+    key ^= (u32)depth << 17;
     return key;
 }
 
@@ -227,110 +203,81 @@ static void record_band(int at, int sample, u32 now)
     lfp_valid[at] = 1;
 }
 
-/* Stock evaluates one contribution per track. Associate it with the newest
- * active voice on that track using the ownership and note-event data.
- * At this hook d0 is the value stock is about to add to the
- * destination.  The normal evaluator path exposes that value in the
- * destination's signed Q8 integer scale.  Do not derive it from the upstream
- * Q16 state output: that would omit the final depth/fade path and would also
- * misread the stock negative-depth overflow case. */
-void lfp_capture(int track, int lfo, int contribution)
+/* ColdFire has 32-bit multiply but lacks the long multiply emitted by
+ * libgcc for a 64-bit C product. Use 16-bit limbs and retain the high word. */
+static int signed_product_high(int a, int b)
 {
-    u32 owner;
+    u32 x = a < 0 ? 0u - (u32)a : (u32)a;
+    u32 y = b < 0 ? 0u - (u32)b : (u32)b;
+    u32 lo = (x & 0xffffu) * (y & 0xffffu);
+    u32 mid = (x >> 16) * (y & 0xffffu) + (lo >> 16);
+    u32 cross = (mid & 0xffffu) + (x & 0xffffu) * (y >> 16);
+    u32 hi = (x >> 16) * (y >> 16) + (mid >> 16) + (cross >> 16);
+    if ((a < 0) != (b < 0))
+        return -(int)hi - ((lo & 0xffffu) != 0 || (cross & 0xffffu) != 0);
+    return (int)hi;
+}
+
+/* The evaluator's fractional product takes the signed high word of
+ * wave * depth. Use the operands directly so unsigned EMAC extraction
+ * cannot turn negative values into a dot pinned at the end of the rail. */
+void lfp_capture(int voice, int lfo, int wave, int depth, const u16 *params)
+{
     u32 sound;
     u32 now;
     u32 key;
-    int voice, candidate;
     int at;
     int sample;
     ensure_ready();
     invalidate_kit();
-    if (track < 0 || track >= TRACKS || lfo < 0 || lfo >= LFOS)
+    if (voice < 0 || voice >= VOICES || lfo < 0 || lfo >= LFOS)
         return;
-    voice = -1;
-    for (candidate = 0; candidate < VOICES; candidate++) {
-        if (lfp_voice_active[candidate] && OWNER(candidate) == (u32)track
-                && (voice < 0 || lfp_note_serial[candidate] >= lfp_note_serial[voice]))
-            voice = candidate;
-    }
-    if (voice < 0)
+    if (!lfp_voice_active[voice])
         return;
 
-    owner = OWNER(voice);
     sound = VOICE_SOUND(voice);
 
     /* A changed sound pointer means a reused voice or a preset delivery.  Do
      * not let a sample from the previous sound survive the new contribution. */
-    if (lfp_owner_seen[voice] != owner || lfp_sound_seen[voice] != sound) {
+    if (lfp_sound_seen[voice] != sound) {
         clear_voice(voice);
-        lfp_owner_seen[voice] = owner;
         lfp_sound_seen[voice] = sound;
     }
 
-    lfp_voice_track[voice] = (i8)track;
-    sample = contribution;
-    lfp_track_voice[track] = (i8)voice;
+    sample = signed_product_high(wave, depth);
     at = index_of(voice, lfo);
     lfp_sample[at] = sample;
     now = TICKS;
     lfp_sample_tick[at] = now;
     if (lfp_band_count[at] == 0 || lfp_band_tick[at] != now) {
-        key = preview_band_key(track, lfo);
+        key = preview_band_key(params, depth);
         if (lfp_band_key[at] != key) {
             reset_band(at);
             lfp_band_key[at] = key;
         }
+        lfp_tier[at] = (u8)rate_tier(params, depth);
         record_band(at, sample, now);
     } else {
         lfp_valid[at] = 1;
     }
 }
 
-static int voice_is_current_for_track(int voice, int track)
-{
-    int owner_t;
-    if (voice < 0 || voice >= VOICES || !lfp_voice_active[voice]
-            || lfp_voice_released[voice] || lfp_voice_track[voice] != track)
-        return 0;
-    owner_t = owner_track(OWNER(voice));
-    if (owner_t >= 0 && owner_t != track)
-        return 0;
-    /* A sound replacement can happen before the next evaluator call.  Do not
-     * let the UI display the previous generation in that interval. */
-    if (VOICE_SOUND(voice) != lfp_sound_seen[voice])
-        return 0;
-    return 1;
-}
-
 static int selected_voice(int track)
 {
     int voice, best = -1;
-    u32 best_serial = 0;
-    if (track < 0 || track >= TRACKS)
+    u32 kit = LIVE_KIT;
+    u32 sound;
+    if (!kit || track < 0 || track >= TRACKS)
         return -1;
+    sound = kit + DN2_SOUND_AT + track * DN2_SOUND_STRIDE;
     for (voice = 0; voice < VOICES; voice++) {
-        if (!voice_is_current_for_track(voice, track))
+        if (!lfp_voice_active[voice] || VOICE_SOUND(voice) != sound
+                || lfp_sound_seen[voice] != sound)
             continue;
-        if (best < 0 || lfp_note_serial[voice] >= best_serial) {
+        if (best < 0 || (int)(lfp_note_serial[voice] - lfp_note_serial[best]) > 0)
             best = voice;
-            best_serial = lfp_note_serial[voice];
-        }
     }
-    if (best >= 0)
-        return best;
-    /* The cache is only a fallback for a frame in which the evaluator has
-     * already identified a voice but the owner scan is momentarily between
-     * updates.  It is still gated by the same active bit and owner check. */
-    voice = lfp_track_voice[track];
-    if (voice_is_current_for_track(voice, track))
-        return voice;
-    return -1;
-}
-
-static int mirror_word(int track, int slot)
-{
-    return *(volatile u16 *)(TARGETS + MIRROR_PREFIX + MIRROR_STRIDE * (u32)track
-                              + 2u * (u32)slot);
+    return best;
 }
 
 static int bpm(void)
@@ -340,17 +287,15 @@ static int bpm(void)
 }
 
 /* 0 = dot, 1 = sampled band, 2 = fast sampled band. */
-static int rate_tier(int track, int lfo)
+static int rate_tier(const u16 *params, int depth)
 {
-    int base = 1 + 8 * lfo;
-    int dep = (short)mirror_word(track, base + 7) - 0x4000;
     int speed, mult_code, beats, mult, rate;
-    if (dep < 0x80 && dep > -0x80)
+    if (depth < 0x100 && depth > -0x100)
         return 0;
-    speed = (short)mirror_word(track, base) - 0x4000;
+    speed = (short)params[0] - 0x4000;
     if (speed < 0)
         speed = -speed;
-    mult_code = mirror_word(track, base + 1) >> 8;
+    mult_code = params[1] >> 8;
     if (mult_code > 23)
         mult_code = 23;
     beats = mult_code < 12 ? bpm() : 120;
@@ -389,7 +334,7 @@ static int ui_signature(int lfo, int *tier_out, int *lo_out, int *hi_out)
         return 0;
     if (TICKS - lfp_sample_tick[at] > SHOWN_TICKS)
         return 0;
-    tier = rate_tier(track, lfo);
+    tier = lfp_tier[at];
     if (tier == 0) {
         int y = rail_y(lfp_sample[at]);
         *tier_out = tier;

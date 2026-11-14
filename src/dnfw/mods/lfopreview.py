@@ -1,7 +1,7 @@
 """Developer LFO preview for the three stock synth LFO pages.
 
-The prototype records evaluator A's signed, depth- and fade-scaled contribution
-before stock adds it to the destination and applies the destination clamp.  It
+The prototype reads evaluator A's fade-scaled wave and signed depth for each
+voice before destination accumulation. It
 keeps that sample in a separate platform CODE chunk and draws a small bipolar
 rail on the selected LFO page.  MIDI evaluator B, LFO4, and browser packaging
 are separate follow-up stages.

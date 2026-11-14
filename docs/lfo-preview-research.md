@@ -21,26 +21,24 @@ state ownership rules. It is not a shipping design.
 ## Engine path
 
 The selected audio-track evaluator is `0x40137726`. Its stock LFO state starts
-at `0x4463fc18` and contains 16 track slices. Each slice has three 40-byte
+at `0x4463fc18` and contains 16 voice slices. Each slice has three 40-byte
 records. The output field in a record is at `+4`. This state is upstream of the
 final depth and fade scaling, so the page does not read it as the preview value.
 
-The final contribution hook is `0x40137ab4`. Stock has already executed
-`movclrl %acc0,%d0` at `0x40137ab2`. The hook reads `d0` before stock writes it
-to the destination and adds the destination target. It then replays the two
-displaced instructions and returns to `0x40137aba`.
+The final multiply hook is `0x40137aa6`. It reads the fade-scaled wave
+and the depth, replays the stock multiply, then returns to `0x40137ab4`
+with the stock result. The preview uses a signed product of the same operands.
 
 | item | address or layout | use |
 |---|---:|---|
 | evaluator A | `0x40137726` | stock synth LFO1-3 pass |
 | evaluator B | `0x401373dc` | MIDI path, not installed by this prototype |
-| final contribution hook | `0x40137ab4` | capture before destination accumulation and clamp |
+| final multiply hook | `0x40137aa6` | capture the operands before destination accumulation |
 | state A | `0x4463fc18`, `0x780` bytes | stock phase and upstream output |
 | state B | `0x4463f498`, `0x780` bytes | MIDI state, reserved for later work |
 | mirror prefix | `34` bytes | evaluator parameter mirror |
 | mirror stride | `202` bytes | one runtime voice block |
-| voice owner map | `0x80005308`, 16 longs | direct track number, `0..15` |
-| voice sound map | `0x800052a8`, 16 longs | generation check for voice reuse and preset delivery |
+| voice sound map | `0x800052a8`, 16 longs | sound pointer delivered to each voice |
 | live kit pointer | `0x800052a0` | invalidates state when the active kit or pattern changes |
 
 The frame hook is `0x40025eb2`, where stock and Waverider both resume after
@@ -49,20 +47,13 @@ the exchange. It observes the original frame at
 release mask. A note-on clears the voice's old rows and increments its private
 generation serial. A release makes that voice unavailable to the page.
 
-The evaluator's signed-byte arrays select state-copy sources. During
-sequencer playback they can hold `-1` even while a note is active. The
-capture hook uses the stock owner map and note serial to associate each
-track's contribution with its newest active voice.
-
-The selector then chooses the newest remaining active voice for the selected track.
-If no active voice remains, the page draws the rail and centre mark without a
-dot.
-
-The voice-owner cache uses an explicit `0xffffffff` unseen sentinel, because
-track zero is a valid owner. A change in the stock voice sound pointer also
-clears the row. This covers a voice handoff and a new preset delivery even when
-the track number stays the same. A kit or pattern pointer change clears every row before the next
-frame's note-on events are recorded.
+The evaluator's row index is the voice. The hook saves that voice's sample,
+and the UI matches the delivered sound pointer against the selected track's
+live sound. It picks the newest active voice. Voices in the same note-on
+frame share a serial, so the lowest voice index wins for a chord. Repeated
+note-on mask bits across frames do not restart the capture. A release makes
+that voice unavailable, and an owner or kit pointer change invalidates
+the old samples.
 
 ## Signed arithmetic evidence
 
@@ -77,11 +68,10 @@ resolved the distinction:
 | `0x2000` | `0x0418926b` | `+0x3f00` after destination reaches `0x7f00` |
 | `0xe000` | `0x0418905f` | `+0x3f00` after destination reaches `0x7f00` |
 
-The negative-depth result is a stock arithmetic case. The hook sees the raw
-pre-accumulation value. Stock then adds the target and clamps the destination.
-The prototype preserves the raw hook value and clamps only when mapping to the
-fixed rail. It does not reinterpret this case as `heard - target`, and it does
-not shift the hook value as if it were the upstream Q16 state output.
+The large negative-depth case was observed in the emulator's stock EMAC
+result. In 0.1.13, the preview uses the high 32 bits of the signed product
+of the fade-scaled wave and twice the centred depth. The stock multiply
+and destination write still run with their original operands.
 
 The manual evaluator harness covers 18 cases. Each case runs for 64 frames.
 The cases exercise zero, positive and negative depth, both speed directions,
@@ -91,7 +81,9 @@ FREE, TRIG, HOLD, ONE and HALF, and TRI, SIN, SQR, SAW, EXP, RMP and RND.
 The stock and patched engine outputs matched exactly for all 1,152 frames in
 phase, upstream output, destination and isolated destination comparison. The
 non-negative hook samples matched the isolated output for all 1,088 frames.
-The negative-depth rows intentionally retain the raw pre-clamp hook value.
+The negative-depth preview swept from −4064 to zero. The stepped test checks
+the preview against the signed product and confirms that retriggering returns
+the phase and sample to their initial values.
 
 Run the manual control and patched comparison with:
 
@@ -124,8 +116,8 @@ The initial measured source-pixel geometry is:
 | part | value |
 |---|---:|
 | rail x | 18 |
-| rail y | 13 through 49 |
-| centre | 31 |
+| rail y | 7 through 49 |
+| centre | 28 |
 | dot | 3 by 3 pixels |
 
 The rail is drawn on every supported page. A valid sample maps the fixed
@@ -168,8 +160,8 @@ The ColdFire harness measured evaluator A from the same `boot400M.snap` state:
 
 These are emulator instruction counts with the Python instruction hook. They
 are comparative counts, not instrument milliseconds. The prototype code image
-is 2,876 bytes in 0.1.12 (the packed CODE chunk is 2,892 bytes). Its separate BSS is
-7,720 bytes.
+is 2,644 bytes in 0.1.13 (the packed CODE chunk is 2,660 bytes). Its separate BSS is
+7,660 bytes.
 
 A standalone rail draw cost about 1,223 instructions for LFO1 in the earlier
 harness. The shorter LFO2 and LFO3 calls cost about 1,013 and 1,016 because
@@ -210,9 +202,9 @@ cd /Users/moru/Documents/Work/dn2_firmware_explore
 ./tools/with_m68k_gcc13.sh python3 scripts/build_lfopreview.py
 ./tools/with_m68k_gcc13.sh .venv/bin/python -m dnfw.cli.main mods apply \
   elektron_binaries/Digitone_II_OS1.11.syx \
-  --mod lfopreview -o out/lfopreview/lfopreview-0.1.12_DN2_1.11.syx
+  --mod lfopreview -o out/lfopreview/lfopreview-0.1.13_DN2_1.11.syx
 PYTHONPATH=src .venv/bin/python scripts/prepare_lfopreview_emulator.py \
-  out/lfopreview/lfopreview-0.1.12_DN2_1.11.syx
+  out/lfopreview/lfopreview-0.1.13_DN2_1.11.syx
 ```
 
 The build writes the versioned SysEx under the ignored `out` directory. The
@@ -241,8 +233,8 @@ Run the regression with Pillow in the project Python environment:
 
 ```sh
 .venv/bin/python scripts/emu_lfopreview_playback.py \
-  out/lfopreview/lfopreview-0.1.12_DN2_1.11.syx --page 2 \
-  --out out/lfopreview/012-lfo2
+  out/lfopreview/lfopreview-0.1.13_DN2_1.11.syx --page 2 \
+  --out out/lfopreview/013-lfo2
 ```
 
 The test boots stock and patched firmware with SSI0 paced at 96,000 requests
@@ -254,7 +246,9 @@ to its idle state when playback stops. It writes stock and patched PBMs,
 2× animation frames, a GIF, and a JSON summary under
 `--out`. It exercises the ColdFire frame and UI paths. For a combined image,
 pass `--waverider --control WAVERIDER_ONLY.syx` to compare against Waverider
-alone. Use the preview build's `symbols.json` for both preview images.
+alone. Use the preview build's `symbols.json` for both preview images. Add
+`--chord` to program C4, E4 and G4 on the first step and test the dot during
+chord playback.
 
 Headless page rendering and an injected visual control are separate:
 

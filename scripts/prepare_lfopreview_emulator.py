@@ -4,7 +4,7 @@ The digikit emulator deliberately has its own Python environment and does not
 unpack SysEx files.  This small bridge keeps the emulator input reproducible:
 
     .venv/bin/python scripts/prepare_lfopreview_emulator.py \
-      out/lfopreview/lfopreview-0.1.12_DN2_1.11.syx
+      out/lfopreview/lfopreview-0.1.13_DN2_1.11.syx
 
 It writes ``section_3_MAIN_OS.bin``, ``symbols.json`` and ``routines.json`` in
 the same directory as the image.

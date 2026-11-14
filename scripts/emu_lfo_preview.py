@@ -41,6 +41,7 @@ from emulib.machine import Machine  # noqa: E402
 
 
 EVAL_A = 0x40137726
+PREVIEW_MULTIPLY = 0x40137AA6
 STATE_A = 0x4463FC18
 STATE_B = 0x4463F498
 STATE_BYTES = 0x780
@@ -49,7 +50,6 @@ MIRROR_PREFIX = 34
 MIRROR_STRIDE = 202
 RATE = 0x402A0DEC
 LIVE_KIT = 0x800052A0
-OWNER = 0x80005308
 VOICE_SOUND = 0x800052A8
 SET_FRAC = bytes.fromhex("a93c000000204e75")
 REST = BASELINE_VALUE
@@ -144,6 +144,17 @@ class EvaluatorProbe:
         self.out1 = self.machine.alloc(256)
         self.out2 = self.machine.alloc(256)
         self.frame = self.machine.alloc(128)
+        self.expected_sample = None
+        if build:
+            from unicorn.m68k_const import UC_M68K_REG_A5, UC_M68K_REG_D0, UC_M68K_REG_D1
+
+            def trace_multiply(uc, _address, _size, _data):
+                if uc.reg_read(UC_M68K_REG_A5) == 0 and self.expected_sample is None:
+                    wave, depth = (struct.unpack(">i", struct.pack(">I", uc.reg_read(reg)))[0]
+                                   for reg in (UC_M68K_REG_D0, UC_M68K_REG_D1))
+                    self.expected_sample = (wave * (depth - 0x4000) * 2) >> 32
+
+            self.machine.hook_at(PREVIEW_MULTIPLY, trace_multiply)
 
         # The direct evaluator probe does not have the normal audio frame
         # builder.  Give the prototype the same minimal owner/event state as a
@@ -154,9 +165,6 @@ class EvaluatorProbe:
         self.machine.write(self.out2, bytes(256))
         self.machine.write(self.out1, b"\0")
         self.machine.write(self.out2, b"\0")
-        # 0x80005308 is the stock per-voice track map, not the live sound
-        # pointer.  Voice zero belongs to selected track zero in this probe.
-        self.machine.write(OWNER, struct.pack(">I", 0))
         self.machine.write(VOICE_SOUND, struct.pack(">I", kit + 52))
 
     def reset(self) -> None:
@@ -194,6 +202,7 @@ class EvaluatorProbe:
         phase_at = state_phase_address(STATE_A, 0, case.lfo)
         samples = []
         for frame in range(frames):
+            self.expected_sample = None
             self.machine.write(self.buffer, bytes(target))
             trigger = 0xFFFF if frame in case.retriggers else 0
             self.machine.call(EVAL_A, self.buffer, self.rate, trigger, trigger,
@@ -211,11 +220,10 @@ class EvaluatorProbe:
             if self.build:
                 at = self.symbols["lfp_sample"] + 4 * case.lfo
                 valid_at = self.symbols["lfp_valid"] + case.lfo
-                # The hook is immediately before stock adds d1 to d0.  The
-                # stored d0 is the destination's q8 integer-scale contribution;
-                # the evaluator's state output above is upstream q16 state.
                 row["preview_contribution_q8"] = _s32(self.machine, at)
                 row["preview_valid"] = self.machine.read(valid_at, 1)[0]
+                if case.lfo == 2 and row["preview_contribution_q8"] != self.expected_sample:
+                    raise RuntimeError(f"{case.name}, frame {frame}: signed multiply mismatch")
             samples.append(row)
         return samples
 
@@ -270,6 +278,11 @@ def main() -> int:
                                    if not sample["preview_valid"]), None)
             if missing_sample is not None:
                 raise SystemExit(f"{case.name}: no captured preview at frame {missing_sample}")
+            if case.name == "retrigger" and args.frames > case.retriggers[-1]:
+                first, second = (samples[index] for index in case.retriggers)
+                for field in ("phase_q16", "preview_contribution_q8"):
+                    if first[field] != second[field]:
+                        raise SystemExit(f"retrigger: {field} did not return to its starting value")
         records.append(_case_record(case, samples))
         summary = records[-1]["summary"]
         print(

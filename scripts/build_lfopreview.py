@@ -37,7 +37,7 @@ ENTRIES = ["lfp_engine_hook", "lfp_frame_hook", "lfp_renderer_hook", "lfp_poll"]
 # first argument is the owning LfoPageView on the verified 1.11 call path;
 # the C guard checks that view's vtable before using its selected-page field.
 HOOKS = (
-    (0x40137AB4, 6, "lfp_engine_hook", "evaluator A: final contribution before destination accumulation"),
+    (0x40137AA6, 14, "lfp_engine_hook", "evaluator A: signed inputs to the final depth multiply"),
     (0x40025EB2, 6, "lfp_frame_hook", "audio frame: observe note masks after exchange"),
     (0x4006448A, 8, "lfp_renderer_hook", "stock specialised LFO control renderer"),
     (0x4002E46A, 6, "lfp_poll", "UI dirty-screen branch after poll"),

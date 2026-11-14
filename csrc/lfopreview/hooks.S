@@ -4,7 +4,14 @@
 
     .globl lfp_engine_hook
 lfp_engine_hook:
-    /* Preserve the evaluator's scratch registers around the C call. */
+    /* d0 is the stock wave after fade. Replay the stock depth multiply
+     * separately so the preview can use a signed product without changing
+     * either the stock destination result or the EMAC state. */
+    movel   %d0,%sp@-
+    addil   #-16384,%d1
+    addl    %d1,%d1
+    macl    %d1,%d0,%acc0
+    movclrl %acc0,%d0
     movel   %d0,%sp@-
     movel   %d1,%sp@-
     movel   %d2,%sp@-
@@ -14,16 +21,17 @@ lfp_engine_hook:
 
     /* The inner counter is the page index: 0, 1, 2 for LFO1, LFO2, LFO3.
      * The loop visits them in reverse, so keep the counter itself rather than
-     * reversing it a second time. The evaluator's signed-byte arrays select
-     * state-copy sources, so capture resolves the active voice separately. */
-    movel   %sp@(72),%d0
-    movel   %d0,%d1
-    movel   %sp@(20),%d3
-    movel   %d3,%sp@-
+     * reversing it a second time. a5 is the destination voice row. */
+    movel   %sp@(76),%d2
+    movel   %sp@(24),%d3
+    lea     %a4@(68),%a0
+    movel   %a0,%sp@-
     movel   %d1,%sp@-
+    movel   %d3,%sp@-
+    movel   %d2,%sp@-
     movel   %a5,%sp@-
     jsr     lfp_capture
-    lea     %sp@(12),%sp
+    lea     %sp@(20),%sp
 
     /* Restore the registers and replay the two displaced stock instructions. */
     movel   %sp@+,%a1
@@ -32,9 +40,8 @@ lfp_engine_hook:
     movel   %sp@+,%d2
     movel   %sp@+,%d1
     movel   %sp@+,%d0
-    movel   %d0,%a2@(108)
-    mvsw    %fp@,%d1
-    jmp     0x40137aba
+    addq.l  #4,%sp
+    jmp     0x40137ab4
 
     .globl lfp_frame_hook
 lfp_frame_hook:

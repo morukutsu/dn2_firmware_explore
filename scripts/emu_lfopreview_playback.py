@@ -16,12 +16,12 @@ from dnfw import seqframes
 SAMPLES = 48
 INTERVAL = 5_000_000
 # Canvas y runs upward. The PBM rows increase downward.
-GUTTER = (16, 13, 21, 52)
-RAIL_ROWS = range(14, 51)
-CENTRE_ROW = 32
+GUTTER = (16, 13, 21, 58)
+RAIL_ROWS = range(14, 57)
+CENTRE_ROW = 35
 
 
-def panel_steps(probe=(), *, page=1, waverider=False):
+def panel_steps(probe=(), *, page=1, waverider=False, chord=False):
     # Start from the factory project, enter four trigs, then set the LFO's
     # destination to Algorithm and raise DEP with encoder H.
     steps = ["wait:1500M", "tap:12", "wait:60M"]
@@ -30,8 +30,11 @@ def panel_steps(probe=(), *, page=1, waverider=False):
         for _ in range(4):
             steps += ["tap:14", "wait:20M"]
         steps += ["tap:10", "wait:100M", "tap:2", "wait:60M", "frame:machine"]
-    steps += ["tap:19", "tap:25", "tap:29",
-              "tap:33", "tap:37", "tap:19", "wait:50M", "tap:6", "wait:20M"]
+    steps += ["tap:19", "tap:25", "tap:29", "tap:33", "tap:37"]
+    if chord:
+        from emu_seqplay import chord_steps
+        steps += chord_steps(1, [4, 3], 0)
+    steps += ["tap:19", "wait:50M", "tap:6", "wait:20M"]
     for _ in range(page - 1):
         steps += ["tap:6", "wait:20M"]
     steps += ["turn:4:28", "wait:20M", "tap:14", "wait:20M", "tap:10", "wait:20M"]
@@ -40,6 +43,8 @@ def panel_steps(probe=(), *, page=1, waverider=False):
         for _ in range(12):
             steps += ["turn:1:10", "wait:3M"]
         steps += ["release:41", "wait:20M"]
+    if chord:
+        steps += ["turn:7:28", "wait:20M"]
     steps += ["press:48"]
     for _ in range(12):
         steps += ["turn:8:10", "wait:3M"]
@@ -103,6 +108,7 @@ def main():
     parser.add_argument("--page", type=int, choices=(1, 2, 3), default=1)
     parser.add_argument("--control", type=Path, help="compare against this build instead of stock")
     parser.add_argument("--waverider", action="store_true", help="select and assert Waverider type 5")
+    parser.add_argument("--chord", action="store_true", help="play a chord on step 1 in TRIG mode")
     args = parser.parse_args()
     symbols = json.loads((args.symbols or args.image.with_name("symbols.json")).read_text())
     signature_address = int(symbols["drawn_signature"], 16)
@@ -114,7 +120,7 @@ def main():
                   watch=(playback.FAULT_DN2_111,), count=(0x40025E36, 0x40137726))
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            options = dict(page=args.page, waverider=args.waverider)
+            options = dict(page=args.page, waverider=args.waverider, chord=args.chord)
             stock_run = executor.submit(playback.run, args.control or args.stock,
                                         panel_steps(**options), out / "stock",
                                         base=args.stock if args.control else None, **common)
@@ -123,7 +129,12 @@ def main():
             stock, preview = stock_run.result(), preview_run.result()
     except RuntimeError as exc:
         parser.exit(2, f"{exc}\n")
-    baseline, patched = (seqframes.events(r["captures"]) for r in (stock, preview))
+    def playing_events(run):
+        idle = next(row["icount"] for row in run["results"]
+                    if row.get("frame", "").endswith("/idle.pbm"))
+        return [event for event in seqframes.events(run["captures"]) if event.icount >= idle]
+
+    baseline, patched = (playing_events(r) for r in (stock, preview))
     onsets = seqframes.note_ons(baseline)
     # UI redraw work can shift PLAY delivery. Compare timing from the first
     # note-on and allow one audio frame for work between interrupt and send.
@@ -147,13 +158,15 @@ def main():
     checks.update(note_ons=len(onsets), note_offs=len(baseline) - len(onsets),
                   identical_events=same_notes, first_note_shift=onset_shift,
                   max_relative_timestamp_delta=timestamp_error, lfo_pages=pages,
-                  track_1_frame_machine_types=sorted(machine_then_play))
+                  track_1_frame_machine_types=sorted(machine_then_play),
+                  note_on_pitches=[event.notes for event in patched_onsets])
     (out / "summary.json").write_text(json.dumps(checks, indent=2) + "\n")
     print(json.dumps(checks, indent=2))
     passed = (checks["rail"] and checks["clear_above_syn_box"]
               and checks["stock_gutter_stable"] and checks["clears_on_stop"]
               and len(checks["visible_dot_rows"]) >= 2 and checks["note_offs"] == 4
               and pages == [args.page - 1] and len(onsets) == 4 and same_notes
+              and (not args.chord or len(patched_onsets[0].voices) == 3)
               and (not args.waverider or machine_then_play == {5})
               and timestamp_error <= seqframes.CPU_HZ / 1500)
     return 0 if passed else 1
