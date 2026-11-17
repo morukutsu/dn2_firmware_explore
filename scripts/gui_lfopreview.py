@@ -12,7 +12,7 @@ from emulib import paths
 from emulib.machine import Machine
 
 
-def configure_gui(build_dir: Path):
+def configure_gui(install_overlay):
     paths.use_digikit(tools=True)
     from emu import gui
 
@@ -32,14 +32,13 @@ def configure_gui(build_dir: Path):
         finally:
             if scratch is not None:
                 scratch.cleanup()
-        install(machine, build_dir)
-        print(f"[lfopreview] Installed {build_dir} into the post-boot checkpoint", flush=True)
+        install_overlay(machine)
         return machine.m, machine.ev, machine.st, machine.pc, machine.inq, machine.hook_at
 
     def timers(*_fresh_sources):
         timer = machine.ev["restore_checkpoint_timers"]()
         if timer is None:
-            raise RuntimeError("LFO preview GUI requires a checkpoint with saved timers")
+            raise RuntimeError("The prototype GUI requires a checkpoint with saved timers")
         return timer
 
     # This checkout's GUI does not claim the saved timers on its own. Keep
@@ -50,6 +49,15 @@ def configure_gui(build_dir: Path):
     return gui
 
 
+def make_app(install_overlay, *, scale, syx=paths.SYX, realtime=False, exact=False, app_factory=None):
+    gui = configure_gui(install_overlay)
+    app_class = gui.App if app_factory is None else app_factory(gui)
+    # Keep press and release in separate worker passes with a shorter dwell.
+    return app_class(str(paths.SNAPSHOTS / "ui1200M.snap"), syx=str(syx),
+                     slc=True, scale=scale, fast=not exact,
+                     realtime=realtime, post_intro_ips=0, panel_dwell=4)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", type=Path, default=paths.ROOT / "out/lfopreview")
@@ -57,12 +65,13 @@ def main():
     parser.add_argument("--realtime", action="store_true", help="cap playback at wall-clock speed")
     parser.add_argument("--exact", action="store_true", help="use counted stepping for debugging")
     args = parser.parse_args()
-    gui = configure_gui(args.build.resolve())
-    # Shorter dwell for interactive testing, with press and release still
-    # delivered in separate worker passes.
-    gui.App(str(paths.SNAPSHOTS / "ui1200M.snap"), syx=str(paths.SYX),
-            slc=True, scale=args.scale, fast=not args.exact,
-            realtime=args.realtime, post_intro_ips=0, panel_dwell=4).mainloop()
+    build = args.build.resolve()
+
+    def install_overlay(machine):
+        install(machine, build)
+        print(f"[lfopreview] Installed {build} into the post-boot checkpoint", flush=True)
+
+    make_app(install_overlay, scale=args.scale, realtime=args.realtime, exact=args.exact).mainloop()
 
 
 if __name__ == "__main__":

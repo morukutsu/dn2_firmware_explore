@@ -26,6 +26,8 @@ SPEC = json.loads((pathlib.Path(__file__).with_name("lfopreview_code.json")).rea
 CODE_VA = SPEC["code"]["va"]
 BLOB = bytes.fromhex(SPEC["code"]["blob"])
 BSS = SPEC["code"].get("bss", 0)
+# A word-aligned scan combines not.l %d3 with the start of mvz.w 34(%a2),%d0.
+NOT_RAM = (0x46F104FE,)
 
 
 def extents(firmware=None) -> list[Extent]:
