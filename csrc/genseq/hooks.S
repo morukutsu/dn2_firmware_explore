@@ -20,9 +20,12 @@ gseq_admit_hook:
     cmpi.l  #-2,%d0
     bne.s   1f
     move.l  %a1,-(%sp)
+    movea.l -44(%fp),%a1
+    move.l  4(%a1),-(%sp)
     move.l  %a0,-(%sp)
     jsr     gseq_admit
     movea.l (%sp)+,%a0
+    addq.l  #4,%sp
     movea.l (%sp)+,%a1
     tst.l   %d0
     beq.s   3f
@@ -36,14 +39,43 @@ gseq_admit_hook:
     .global gseq_stop_hook
 gseq_stop_hook:
     addq.l  #1,gseq_transport
+    addq.l  #1,gseq_history_restart
     clr.l   0x42c5a9d0
     jmp     0x400d9684
 
     .global gseq_reset_clock_hook
 gseq_reset_clock_hook:
     addq.l  #1,gseq_transport
+    addq.l  #1,gseq_history_restart
     clr.l   0x42c5a9d0
     jmp     0x400d83f2
+
+    .global gseq_frame_hook
+gseq_frame_hook:
+    tst.l   gseq_anchor_count
+    bne.s   2f
+    move.l  0x42c5a9a0,%d0
+    cmp.l   gseq_history_copy,%d0
+    bne.s   2f
+    move.l  0x42c5a918,%d0
+    cmp.l   gseq_history_running,%d0
+    beq.s   1f
+2:
+    lea     -16(%sp),%sp
+    movem.l %d0-%d1/%a0-%a1,(%sp)
+    move.l  -48(%fp),%d0
+    subq.l  #1,%d0
+    move.l  %d0,-(%sp)
+    jsr     gseq_frame_clock
+#ifdef GSEQ_PERFORMANCE_PROBE
+    .global gseq_probe_clock_done
+gseq_probe_clock_done:
+#endif
+    addq.l  #4,%sp
+    movem.l (%sp),%d0-%d1/%a0-%a1
+    lea     16(%sp),%sp
+1:  move.l  0x4058e554,%d0
+    jmp     0x40027b6e
 
     .global gseq_prepare_hook
 gseq_prepare_hook:

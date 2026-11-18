@@ -22,14 +22,14 @@ COUNTERS = ("gseq_pitch_misses", "gseq_regen_swaps", "gseq_regen_misses",
             "gseq_pool_drops", "gseq_collision_drops")
 
 
-def workload(tracks, mode, staggered, max_tempo):
+def workload(tracks, mode, staggered, max_tempo, track_length=16):
     # Synthetic pattern written to the fresh A01 playback copy. Use the real
     # scheduler, event pool and audio-frame path once PLAY starts.
     steps = list(BOOT)
     if max_tempo:
         steps += ["tap:9", "wait:30M", *(["turn:9:60", "wait:5M"] * 128),
                   "frame:tempo", "tap:12", "wait:25M"]
-    steps += ["peek:0x42c5a9a0:4", f"poke:{PLAYBACK+122196:#x}:0010",
+    steps += ["peek:0x42c5a9a0:4", f"poke:{PLAYBACK+122196:#x}:{track_length:04x}",
               f"poke:{PLAYBACK+122200:#x}:000000"]  # shared speed index 0 (2x)
     if mode == "gen":
         return steps
@@ -72,9 +72,10 @@ def peak(captures, span, nested=()):
     return worst
 
 
-def run(image, stock, out, symbols, tracks, mode, staggered, max_tempo, reference=None):
+def run(image, stock, out, symbols, tracks, mode, staggered, max_tempo, reference=None,
+        anchor_length=None, track_length=16):
     options = dict(runner=panel_drive(), watch=(playback.FAULT_DN2_111,))
-    steps = workload(tracks, mode.removeprefix("stock-"), staggered, max_tempo)
+    steps = workload(tracks, mode.removeprefix("stock-"), staggered, max_tempo, track_length)
     spans = {"audio_frame": AUDIO, "scheduler_irq": SCHEDULER}
     if mode.startswith("stock"):
         target = stock
@@ -82,11 +83,17 @@ def run(image, stock, out, symbols, tracks, mode, staggered, max_tempo, referenc
     else:
         target = image
         options.update(base=stock, guest_call=(0x4002E464, symbols["gseq_probe_workload"]))
-        steps += [f"send:{MODES.index(mode):02x}{tracks:02x}", "wait:60M"]
+        setup = bytes((MODES.index(mode), tracks))
+        if anchor_length is not None:
+            setup += bytes((1, anchor_length))
+        steps += [f"send:{setup.hex()}", "wait:60M"]
         names = COUNTERS
         if mode != "off":
             spans["admission"] = (symbols["gseq_admit"], 0x4002657C)
             spans["queue_checks"] = (symbols["gseq_enqueue"], symbols["gseq_stock_enqueue"])
+            if anchor_length:
+                spans["anchor_clock"] = (symbols["gseq_frame_clock"], symbols["gseq_probe_clock_done"])
+                spans["anchor_slot"] = (symbols["gseq_phrase_enter"], symbols["gseq_probe_slot_done"])
     steps += ["frame:play", "tap:20", "wait:260M", "frame:stop", "tap:21", "wait:40M"]
     steps.extend(f"peek:{symbols[name]:#x}:4" for name in names)
     pcs = dict.fromkeys(pc for span in spans.values() for pc in span)
@@ -145,6 +152,8 @@ def main():
     parser.add_argument("--staggered", action="store_true", help="spread host onsets across four steps")
     parser.add_argument("--max-tempo", action="store_true", help="turn stock BPM up to its limit")
     parser.add_argument("--compare", type=Path, help="require matching DSP notes and releases against this run")
+    parser.add_argument("--anchor-length", type=int, choices=range(1, 65), metavar="1–64")
+    parser.add_argument("--track-length", type=int, choices=range(1, 129), metavar="1–128", default=16)
     parser.add_argument("--jobs", type=int, default=4)
     args = parser.parse_args()
     symbols = json.loads(args.image.with_name("symbols.json").read_text())
@@ -157,7 +166,7 @@ def main():
             reference = args.compare / label if args.compare is not None else None
             pending[label] = pool.submit(run, args.image, args.stock, args.out / label,
                                          symbols, tracks, mode, args.staggered, args.max_tempo,
-                                         reference)
+                                         reference, args.anchor_length, args.track_length)
         report = {}
         for label, future in pending.items():
             report[label] = future.result()

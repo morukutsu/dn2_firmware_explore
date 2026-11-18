@@ -41,7 +41,7 @@ static unsigned biased(unsigned sample, int bias)
     return (sample * (128u - amount) + target * amount) >> 7;
 }
 
-static uint16_t shape(unsigned shape, unsigned slot, unsigned length)
+uint16_t gseq_shape_value(unsigned shape, unsigned slot, unsigned length)
 {
     static const uint16_t sine[] = {
         0, 2494, 9597, 20228, 32768, 45307, 55938, 63041,
@@ -68,7 +68,7 @@ static uint16_t generate(struct gseq_stream *state, const struct gseq_track *cfg
 {
     const int8_t *c = cfg->control;
     if (c[GEN_MODE] == GEN_SHAPE)
-        return shape(c[SHAPE], slot, c[LEN]);
+        return gseq_shape_value(c[SHAPE], slot, c[LEN]);
     uint32_t draw = state->draws++;
     uint32_t word = draw ? advance(state->random) : random_word(cfg, stream, 0);
     state->random = word;
@@ -171,28 +171,75 @@ void gseq_phrase_publish(struct gseq_phrase *phrase, const struct gseq_draft_ste
     }
 }
 
-uint16_t gseq_phrase_next(struct gseq_phrase *phrase, const struct gseq_track *cfg)
+/* Ceiling of slot * cycle / length, with no 64-bit multiply on ColdFire. */
+uint32_t gseq_anchor_boundary(uint32_t cycle, unsigned length, unsigned slot)
+{
+    return (cycle / length) * slot + ((cycle % length) * slot + length - 1) / length;
+}
+
+unsigned gseq_anchor_region(uint32_t position, uint32_t cycle, unsigned length)
+{
+    /* Stock cycles are at least 2,700,000 ticks. Shifting both operands
+     * avoids overflow and can shift an estimate by at most one region. */
+    unsigned slot = ((position >> 6) * length) / (cycle >> 6);
+    if (slot >= length)
+        return length - 1;
+    if (position < gseq_anchor_boundary(cycle, length, slot))
+        return slot - 1;
+    if (slot + 1 < length && position >= gseq_anchor_boundary(cycle, length, slot + 1))
+        return slot + 1;
+    return slot;
+}
+
+#ifdef GSEQ_PERFORMANCE_PROBE
+__attribute__((noipa)) void gseq_probe_slot_done(void)
+{
+    __asm__ volatile ("" ::: "memory");
+}
+#endif
+
+static inline bool enter_slot(struct gseq_phrase *phrase, const struct gseq_track *cfg, unsigned slot)
 {
     const int8_t *c = cfg->control;
-    unsigned length = c[LEN];
-    if (!length)
-        return generate(&phrase->stream, cfg, 1, 0);
-
-    if (phrase->has_last && c[HOLD] && roll(&phrase->hold_rng, c[HOLD]))
-        return phrase->last;
-
-    unsigned slot = phrase->cursor;
     uint16_t *row = phrase->slots[phrase->bank];
     uint32_t bit = 1u << (slot & 31);
-    if ((phrase->seen[slot >> 5] & bit) && c[MELODY_MUT] &&
-        roll(&phrase->mutation_rng, c[MELODY_MUT])) {
+    bool mutated = (phrase->seen[slot >> 5] & bit) && c[MELODY_MUT] &&
+                   roll(&phrase->mutation_rng, c[MELODY_MUT]);
+    if (mutated) {
         row[slot] = c[GEN_MODE] == GEN_SHAPE
-                  ? shape(c[SHAPE], (random_word(cfg, 6, phrase->mutation.draws++) >> 16) * length >> 16, length)
+                  ? gseq_shape_value(c[SHAPE], (random_word(cfg, 6, phrase->mutation.draws++) >> 16) * c[LEN] >> 16, c[LEN])
                   : generate(&phrase->mutation, cfg, 4, 0);
     }
     phrase->seen[slot >> 5] |= bit;
     phrase->last = row[slot];
     phrase->has_last = true;
+    return mutated;
+}
+
+bool gseq_phrase_enter(struct gseq_phrase *phrase, const struct gseq_track *cfg, unsigned slot)
+{
+    bool mutated = enter_slot(phrase, cfg, slot);
+#ifdef GSEQ_PERFORMANCE_PROBE
+    gseq_probe_slot_done();
+#endif
+    return mutated;
+}
+
+bool gseq_phrase_next_event(struct gseq_phrase *phrase, const struct gseq_track *cfg, uint16_t *latent)
+{
+    const int8_t *c = cfg->control;
+    unsigned length = c[LEN];
+    if (!length) {
+        *latent = generate(&phrase->stream, cfg, 1, 0);
+        return false;
+    }
+    *latent = phrase->last;
+    if (phrase->has_last && c[HOLD] && roll(&phrase->hold_rng, c[HOLD]))
+        return false;
+
+    unsigned slot = phrase->cursor;
+    bool mutated = enter_slot(phrase, cfg, slot);
+    *latent = phrase->last;
     phrase->cursor = slot + 1 == length ? 0 : slot + 1;
     if (++phrase->reads == length) {
         if (c[REGEN] && roll(&phrase->regen_rng, c[REGEN])) {
@@ -209,7 +256,14 @@ uint16_t gseq_phrase_next(struct gseq_phrase *phrase, const struct gseq_track *c
         phrase->draft_reads = 0;
         phrase->stream.draws = 0;
     }
-    return phrase->last;
+    return mutated;
+}
+
+uint16_t gseq_phrase_next(struct gseq_phrase *phrase, const struct gseq_track *cfg)
+{
+    uint16_t latent;
+    gseq_phrase_next_event(phrase, cfg, &latent);
+    return latent;
 }
 
 static unsigned degree(struct gseq_pitch_map map, int note)

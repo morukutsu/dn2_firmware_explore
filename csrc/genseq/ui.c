@@ -1,22 +1,16 @@
 #include "ui.h"
 #include "melody.h"
+#include "../ui/canvas.h"
 
 #define TEXT ((void (*)(void *, uint32_t, int, int, int, const char *, ...))0x4011545cu)
 #define RECT ((void (*)(void *, int, int, int, int, int))0x40114842u)
 #define OUTLINE ((void (*)(void *, int, int, int, int, int))0x40114626u)
-#define BLIT ((void (*)(void *, uint32_t, int, int, int))0x401157fcu)
-/* Stock returns the sprite address in d0. Declare a word result to match. */
-#define FRAME ((uint32_t (*)(uint32_t, int, int, int))0x40115b5eu)
 #define LEVEL ((void (*)(void *, void *, int))0x40063cfcu)
 #define DOTS ((void (*)(void *, void *, int, int, int))0x4006598au)
 #define LABEL_FONT 0x44507ed8u
 #define VALUE_FONT 0x44507eb8u
 #define TITLE_FONT 0x44507ef8u
 #define CENTRED 2
-
-typedef void (*StockControl)(const void *, int, void *, int, int, int);
-#define GAUGE ((StockControl)0x400c08fcu)
-#define NOTE_BOX ((StockControl)0x400c0704u)
 
 enum style { CHOICE, NOTE, KNOB, BIPOLAR, BAR, LENGTH };
 
@@ -35,8 +29,8 @@ static const struct {
         {"VAR", VAR, BIPOLAR}, {"ACT", ACT, BAR},
     }},
     [PAGE_PHRASE] = {"PHRASE", {
-        {"LEN", LEN, LENGTH}, {"HOLD", HOLD, BAR}, {"PHAS", PHASE, KNOB},
-        {"MUT", MELODY_MUT, KNOB}, {"REGN", REGEN, KNOB},
+        {"LEN", LEN, LENGTH}, {"ADV", ADV, CHOICE}, {"PHAS", PHASE, KNOB},
+        {"MUT", MELODY_MUT, KNOB}, {"HOLD", HOLD, BAR}, {"REGN", REGEN, KNOB},
     }},
     [PAGE_GEN] = {"GEN", {
         {"MODE", GEN_MODE, CHOICE}, {"BIAS", GEN_BIAS, BIPOLAR},
@@ -87,6 +81,8 @@ bool gseq_control_active(const struct gseq_track *cfg, unsigned field)
     const int8_t *c = cfg->control;
     if (field == VAR)
         return c[MOD] != MOD_NONE;
+    if ((field == HOLD || field == REGEN) && c[ADV] == ADV_ANCHOR)
+        return false;
     if (field >= HOLD && field <= REGEN)
         return c[LEN] != 0;
     if (field == SHAPE)
@@ -101,6 +97,7 @@ bool gseq_control_active(const struct gseq_track *cfg, unsigned field)
 static const char *choice(unsigned control, int value)
 {
     switch (control) {
+    case ADV: return value == ADV_ANCHOR ? "ANC" : "EVT";
     case TRIG_MODE: return modes[value];
     case BANK: return banks[value];
     case MOD: return transforms[value];
@@ -113,66 +110,79 @@ static const char *choice(unsigned control, int value)
     }
 }
 
-static void knob(void *canvas, int x, int y, int value, int minimum, int maximum)
+/* Waverider's dotted scale and one-pixel fill, with GEN SEQ's own ranges. */
+static void indicator(void *canvas, int x, int y, int value, int low, int high, bool bipolar)
 {
-    /* Use the LEN sprite bank with a linear index. The stock LEN parameter
-     * wrapper remaps its own nonlinear length encoding before selecting a sprite. */
-    uint32_t sprite = FRAME(0x4464580cu, (value - minimum) * 0x7eff / (maximum - minimum), 0x7f00, 1);
-    BLIT(canvas, sprite, x + 1, y + 7, 0);
+    int from = bipolar ? x : x - 9;
+    int at = x - 9 + (value - low) * 18 / (high - low);
+    if (bipolar && value) {
+        int distance = ((value < 0 ? -value : value) * 9 + high - 1) / high;
+        at = x + (value < 0 ? -distance : distance);
+    }
+    for (int i = x - 9; i <= x + 9; i += 2)
+        canvas_px(canvas, i, y);
+    RECT(canvas, from < at ? from : at, y + 1, from < at ? at : from, y + 1, 1);
+    canvas_px(canvas, at, y);
 }
 
-static void draw_cell(void *canvas, const struct cell *cell, int x, int y,
+static void note_name(void *canvas, int x, int y, unsigned note)
+{
+    TEXT(canvas, LABEL_FONT, x, y, CENTRED, "%s%u", notes[note % 12], note / 12);
+}
+
+static void draw_cell(void *canvas, const struct cell *cell, int cx, bool top,
                       const struct gseq_track *cfg, bool edited)
 {
     const int8_t *controls = cfg->control;
     unsigned field = cell->control;
-    int value = controls[field], cx = x + 9;
-    const char *text = choice(field, value);
-    if (!gseq_control_active(cfg, field)) {
-        TEXT(canvas, LABEL_FONT, cx, y + 12, CENTRED, "-");
+    int value = controls[field];
+    bool boxed = cell->style == CHOICE || cell->style == NOTE;
+    bool active = gseq_control_active(cfg, field);
+    int y = top ? 43 : boxed ? 11 : 9;
+    int label_y = top ? 47 : 1;
+    if (!active) {
+        TEXT(canvas, LABEL_FONT, cx, y - 3, CENTRED, "-");
     } else switch (cell->style) {
-    case NOTE:
-        NOTE_BOX(0, value * 256, canvas, x, y + 7, 0);
-        break;
     case CHOICE:
-        OUTLINE(canvas, cx - 10, y + 6, cx + 10, y + 22, 1);
-        if (field == PAT)
-            TEXT(canvas, VALUE_FONT, cx, y + 12, CENTRED, "%d", value + 1);
+    case NOTE:
+        OUTLINE(canvas, cx - 11, y - 4, cx + 11, y + 3, 1);
+        if (cell->style == NOTE)
+            note_name(canvas, cx, y - 3, value);
+        else if (field == PAT)
+            TEXT(canvas, LABEL_FONT, cx, y - 3, CENTRED, "%d", value + 1);
         else
-            TEXT(canvas, VALUE_FONT, cx, y + 12, CENTRED, "%s", text);
+            TEXT(canvas, LABEL_FONT, cx, y - 3, CENTRED, "%.4s", choice(field, value));
         break;
     case BAR:
-        GAUGE(0, value * 0x7f00 / 100, canvas, x, y + 7, 0);
+        indicator(canvas, cx, y, value, 0, 100, false);
         break;
     case BIPOLAR:
         if (field == VAR && controls[MOD] == MOD_FACTOR)
-            knob(canvas, x, y, value, 0, 7);
+            indicator(canvas, cx, y, value, 0, 7, false);
         else if (field == VAR)
-            knob(canvas, x, y, value, -15, 15);
+            indicator(canvas, cx, y, value, -15, 15, true);
         else
-            knob(canvas, x, y, value, -100, 100);
+            indicator(canvas, cx, y, value, -100, 100, true);
         break;
     case LENGTH:
         if (!value)
-            TEXT(canvas, VALUE_FONT, cx, y + 12, CENTRED, "INF");
+            TEXT(canvas, LABEL_FONT, cx, y - 3, CENTRED, "INF");
         else
-            knob(canvas, x, y, value, 0, 64);
+            indicator(canvas, cx, y, value, 0, 64, false);
         break;
     case KNOB:
-        knob(canvas, x, y, value, 0, field == PHASE ? (controls[LEN] > 1 ? controls[LEN] - 1 : 1) : 100);
+        indicator(canvas, cx, y, value, 0,
+                  field == PHASE ? (controls[LEN] > 1 ? controls[LEN] - 1 : 1) : 100, false);
         break;
     }
-    if (!edited)
-        TEXT(canvas, LABEL_FONT, cx, y, CENTRED, "%s", cell->label);
-    else if (*text)
-        TEXT(canvas, LABEL_FONT, cx, y, CENTRED, "%s", text);
-    else if (field == LEN && !value)
-        TEXT(canvas, LABEL_FONT, cx, y, CENTRED, "%s", "INF");
+    /* Boxed controls already show their value. Keep the label during the drawer edit. */
+    if (!edited || boxed || !active || (field == LEN && !value))
+        TEXT(canvas, LABEL_FONT, cx, label_y, CENTRED, "%s", cell->label);
     else if (field == ACT || field == HOLD || field == MELODY_MUT || field == REGEN ||
-             (field >= GEN_BIAS && field <= MOMENT) || field >= PITCH_BIAS)
-        TEXT(canvas, LABEL_FONT, cx, y, CENTRED, "%d%%", value);
+             (field >= GEN_BIAS && field <= MOMENT) || (field >= PITCH_BIAS && field < ADV))
+        TEXT(canvas, LABEL_FONT, cx, label_y, CENTRED, "%d%%", value);
     else
-        TEXT(canvas, LABEL_FONT, cx, y, CENTRED, "%d", field == PAT ? value + 1 :
+        TEXT(canvas, LABEL_FONT, cx, label_y, CENTRED, "%d",
              field == VAR && controls[MOD] == MOD_FACTOR ? value * 2 + 1 : value);
 }
 
@@ -218,6 +228,8 @@ void gseq_value_message(void *view, enum gseq_page page, unsigned encoder,
     int value = track->control[field];
     if (!gseq_control_active(track, field)) {
         const char *hint = field == VAR ? "Select MOD to set VAR" :
+                           (field == HOLD || field == REGEN) && track->control[ADV] == ADV_ANCHOR
+                               ? "Available in EVENT" :
                            field <= REGEN ? "Set a finite LEN" :
                            field == SHAPE ? "Select Shape mode" :
                            field == GEN_BIAS ? "Select Random or Walk" : "Select Walk mode";
@@ -229,6 +241,7 @@ void gseq_value_message(void *view, enum gseq_page page, unsigned encoder,
         return;
     }
     switch (field) {
+    case ADV: STOCK_MESSAGE(STATUS(view), "Advance: %s", value == ADV_ANCHOR ? "Anchor" : "Event"); break;
     case TRIG_MODE: STOCK_MESSAGE(STATUS(view), "Mode: %s", modes[value]); break;
     case BANK: STOCK_MESSAGE(STATUS(view), "Bank: %s", bank_names[value]); break;
     case PAT: STOCK_MESSAGE(STATUS(view), "Pattern: %d", value + 1); break;
@@ -256,8 +269,78 @@ void gseq_value_message(void *view, enum gseq_page page, unsigned encoder,
     }
 }
 
+static void draw_plot(void *canvas, enum gseq_page page, const struct gseq_plot *plot)
+{
+    enum { LEFT = 23, WIDTH = 96, BOTTOM = 16 };
+    if (page == PAGE_PITCH) {
+        int x = 46;
+        RECT(canvas, x, 18, x, 34, 1);
+        RECT(canvas, x - 2, 18, x + 2, 18, 1);
+        RECT(canvas, x - 2, 34, x + 2, 34, 1);
+        note_name(canvas, 32, 15, plot->low);
+        note_name(canvas, 32, 32, plot->high);
+        TEXT(canvas, LABEL_FONT, 80, 32, CENTRED, "%s %.9s", notes[plot->root],
+             plot->scale == CHROMATIC ? "CHROMATIC" : SCALE_SHORT[plot->scale]);
+        if (plot->note < NO_NOTE) {
+            int y = 18 + plot->marks[0];
+            RECT(canvas, x - 1, y - 1, x + 1, y + 1, 1);
+            note_name(canvas, 61, y - 2, plot->note);
+        }
+        return;
+    }
+    if (!plot->size)
+        return;
+    int previous_x = LEFT, previous_y = BOTTOM, spacing = WIDTH / plot->size;
+    for (unsigned i = 0; i < plot->size; ++i) {
+        int x = LEFT + spacing * i + spacing / 2, value = plot->marks[i];
+        int top = BOTTOM + value;
+        if (page == PAGE_TRIG) {
+            if (value == 4)
+                continue;
+            if (value == 3)
+                OUTLINE(canvas, x - 2, 24, x + 2, 28, 1);
+            else if (value) {
+                RECT(canvas, x - 2, 24, x + 2, 28, 1);
+                if (value == 2)
+                    RECT(canvas, x, 26, x, 26, 0);
+            } else
+                canvas_px(canvas, x, 26);
+        } else if (page == PAGE_PHRASE) {
+            int half = spacing > 9 ? 4 : spacing / 2 - 1;
+            RECT(canvas, x - half, BOTTOM + 3, x + half, top, 1);
+            if (i == plot->flash) {
+                if (top > BOTTOM + 4)
+                    RECT(canvas, x - half + 1, BOTTOM + 4, x + half - 1, top - 1, 0);
+                else
+                    canvas_px(canvas, x, top + 1);
+            }
+        } else {
+            if (i) {
+                /* Connect adjacent samples with Waverider's column approach. */
+                int dx = x - previous_x, dy = top - previous_y, yy = previous_y, error = 0;
+                int sign = dy >= 0 ? 1 : -1;
+                dy *= sign;
+                for (int xx = previous_x; xx < x; ++xx) {
+                    int before = yy;
+                    error += dy;
+                    while (error >= dx) {
+                        yy += sign;
+                        error -= dx;
+                    }
+                    canvas_column(canvas, xx, before, yy);
+                }
+            }
+            canvas_px(canvas, x, top);
+            previous_x = x;
+            previous_y = top;
+        }
+        if (i == plot->cursor)
+            RECT(canvas, x - 1, BOTTOM, x + 1, BOTTOM + 1, 1);
+    }
+}
+
 void gseq_draw_controls(void *view, void *canvas, enum gseq_page page,
-                        const struct gseq_track *track, unsigned edited)
+                        const struct gseq_track *track, unsigned edited, const struct gseq_plot *plot)
 {
     RECT(canvas, 15, 0, 127, 53, 0);
     LEVEL(view, canvas, 0);
@@ -269,10 +352,9 @@ void gseq_draw_controls(void *view, void *canvas, enum gseq_page page,
 
     for (unsigned i = 0; i < 8; ++i) {
         const struct cell *cell = &pages[page].cells[i];
-        int x = 24 + 26 * (i % 4), y = i < 4 ? 27 : 0;
+        int x = 34 + 25 * (i % 4);
         if (cell->label)
-            draw_cell(canvas, cell, x, y, track, edited == i + 1);
-        else
-            TEXT(canvas, LABEL_FONT, x + 9, y + 12, CENTRED, "-");
+            draw_cell(canvas, cell, x, i < 4, track, edited == i + 1);
     }
+    draw_plot(canvas, page, plot);
 }

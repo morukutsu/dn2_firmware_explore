@@ -1,6 +1,6 @@
 # GEN SEQ
 
-User guide for GEN SEQ 0.4.1 on Digitone II OS 1.11.
+User guide for GEN SEQ 0.4.6-dev on Digitone II OS 1.11.
 
 GEN SEQ makes melodies on synth tracks. Use SEQ to keep the rhythm you programmed, FILL to add notes in its gaps, or GEN to generate the rhythm as well. Each track has its own settings for each pattern during the session. This version keeps those settings in RAM. Project save and reload do not store them, and Commit to Pattern is unavailable.
 
@@ -9,7 +9,7 @@ GEN SEQ makes melodies on synth tracks. Use SEQ to keep the rhythm you programme
 1. Select a synth track.
 2. Press **[FUNC] + [SEQ]** to open Euclidean.
 3. Press **[FUNC] + [SEQ]** again to open GEN SEQ.
-4. Press **[UP]** or **[DOWN]** to change pages. Turn **DATA ENTRY A–H** to edit the matching control. The label shows the value briefly. The right-hand dots show the selected page.
+4. Press **[UP]** or **[DOWN]** to change pages. Turn **DATA ENTRY A–H** to edit the matching control. Boxed controls keep their name visible during edits. Gauge labels briefly show the value during edits. The right-hand dots mark the selected page. Each page shows status between the two rows of controls.
 5. Press **[NO]** or **[FUNC] + [SEQ]** to return to Euclidean.
 
 Turn **LEVEL/DATA** to change track level. Hold **[FUNC]** while turning it to open LOAD PRESET. Press **[YES]** to open the actions menu.
@@ -26,10 +26,12 @@ The sequencer makes four decisions for each note. **TRIG** decides which steps p
 |---|---|---|---|
 | A | MODE | **OFF** plays the stock sequence. **SEQ** changes eligible pitches on existing trigs. **FILL** adds hits in gaps and generates pitches for eligible hits. **GEN** supplies the track’s sequenced hits. Live playing stays available. | OFF |
 | B | BANK | **GROOVE** contains curated rhythms, **MATH** contains regular and interleaved patterns, and **RANDOM** uses repeatable seeded patterns. | GROOVE |
-| C | PAT | Select pattern 1–32 from the bank. The mask repeats every 16 steps and restarts at the stock track reset. | 1 |
+| C | PAT | Select pattern 1–32 from the bank. Turn faster to move through several patterns at a time. The mask repeats every 16 steps and restarts at the stock track reset. | 1 |
 | D | MOD | **NONE** uses PAT as shown. **SHIFT** rotates hits. **FACTOR** redistributes hits within the cell. **NEIGHBOR** offsets the selected pattern number. | NONE |
 | E | VAR | SHIFT moves −15 to +15 steps. FACTOR uses odd multipliers ×1 to ×15. NEIGHBOR offsets PAT by −15 to +15 and stops at the bank edges. Changing MOD resets VAR. | 0 or ×1 |
 | F | ACT | 0% removes all generated hits. 100% enables every hit in the cell. Lower values keep a repeatable subset. | 100% |
+
+Filled marks show programmed trigs. A center mark shows a pitch override. Hollow marks show generated hits. The underline follows the stock playhead.
 
 BANK through ACT affect FILL and GEN. VAR shows a dash with MOD set to NONE. In FILL, a programmed note or lock trig reserves its step even when a condition prevents it from firing. SEQ works with stock Euclidean timing. Eligible single-note trigs receive generated pitches. Programmed chords and unsupported note forms keep their stock pitches.
 
@@ -40,12 +42,22 @@ BANK through ACT affect FILL and GEN. VAR shows a dash with MOD set to NONE. In 
 | Encoder | Control | Function | Default |
 |---|---|---|---|
 | A | LEN | Loop length of 1–64 eligible note events. **INF** generates a continuous stream and is available with RANDOM or WALK. Hold **[FUNC]** to step through INF, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, and 64. | 8 |
-| B | HOLD | 0–100% chance to reuse the previous melodic value and pause the loop cursor for that event. | 0% |
+| B | ADV | EVT counts eligible note events. ANC divides the track cycle into LEN regions. | EVT |
 | C | PHASE | Starting slot, from 0 to LEN minus 1. PHASE 2 starts at the third slot. | 0 |
 | D | MUT | 0–100% chance to replace a value when its slot is revisited. | 0% |
-| E | REGEN | 0–100% chance to replace the whole phrase after a loop. | 0% |
+| E | HOLD | 0–100% chance in EVT to reuse the previous melodic value and pause the loop cursor for that event. | 0% |
+| F | REGEN | 0–100% chance to replace the whole phrase after a loop. | 0% |
 
-HOLD, PHASE, MUT, and REGEN apply to finite phrases. LEN counts notes that reach the melody generator. With four eligible notes per bar and HOLD at zero, LEN 8 plays over two bars. Rests and skipped trigs leave the cursor in place. HOLD repeats the value. MELODY can still choose a different note from that value as the previous note changes.
+The bars show the stored phrase. The underline shows the latest slot. At
+LEN INF, the bars show recent values. A changed slot briefly flashes when it
+mutates.
+
+In EVT, LEN counts notes that reach the melody generator. With four eligible notes per bar and HOLD at zero, LEN 8 plays over two bars. Rests and skipped trigs leave the cursor in place. HOLD repeats the value. MELODY can still choose a different note from that value as the previous note changes.
+
+ANC advances through rests. Every note in an anchor region uses that region's
+latent value. PHASE rotates the regions. MUT rolls once when the clock
+revisits a region. ANC disables HOLD and REGEN. Selecting ANC at LEN INF
+sets LEN to 8.
 
 Turning MUT back to zero keeps the values already in the loop. To restore a SHAPE ramp, select **[YES] → NEW PHRASE**. STOP and PLAY return the cursor to PHASE and retain the current values.
 
@@ -63,7 +75,7 @@ Turning MUT back to zero keeps the values already in the loop. To restore a SHAP
 | F | MOMENT | 0–100%. Set the chance that WALK keeps moving in the same direction. | 35% |
 | G | SHAPE | Choose UP, DOWN, TRIANGLE, SINE, or ALTERNATE. A length of 1 uses the midpoint. | UP |
 
-STEP through MOMENT apply to WALK. SHAPE requires SHAPE mode. Selecting SHAPE from LEN INF sets LEN to 8. Hold **[FUNC]** while turning a percentage control to snap to its minimum, center, or maximum.
+The graph shows recent values for RANDOM and WALK and the configured contour for SHAPE. STEP through MOMENT apply to WALK. SHAPE requires SHAPE mode. Selecting SHAPE from LEN INF sets LEN to 8. Hold **[FUNC]** while turning a percentage control to snap to its minimum, center, or maximum.
 
 ## 4. PITCH
 
@@ -77,7 +89,7 @@ STEP through MOMENT apply to WALK. SHAPE requires SHAPE mode. Selecting SHAPE fr
 | D | HIGH | Set the highest note, down to LOW. | C6 (MIDI 72) |
 | E | BIAS | −100% to +100%. Give lower or higher notes more weight within the selected range. | 0% |
 
-Hold **[FUNC]** and turn LOW or HIGH to move by octaves. The bounds apply before stock transpose. If the range has no note in the selected scale, a programmed trig keeps its pitch and a generated hit stays silent.
+The center shows the legal pitch range and the latest generated note. Hold **[FUNC]** and turn LOW or HIGH to move by octaves. The bounds apply before stock transpose. If the range has no note in the selected scale, a programmed trig keeps its pitch and a generated hit stays silent.
 
 ## 5. MELODY
 
@@ -90,7 +102,7 @@ Hold **[FUNC]** and turn LOW or HIGH to move by octaves. The bounds apply before
 | C | TONIC | 0–100%. Favor stable degrees in a named scale, with the strongest weight on its root. | 0% |
 | D | RESOLVE | 0–100%. Favor a nearby stable degree after a less stable degree. | 0% |
 
-The previous generated note sets the context for MOVE and REPEAT.
+The graph connects the last 16 generated notes. The previous generated note sets the context for MOVE and REPEAT.
 TONIC and RESOLVE apply to named scales. The first generated note has no previous-note context.
 
 ## Try three sequences

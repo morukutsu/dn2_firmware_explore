@@ -35,17 +35,42 @@ static bool has_reserve(uint8_t *head, unsigned link)
     return head != 0;
 }
 
-static bool host_reserved(const uint8_t *data, unsigned step)
+static unsigned euclidean_step(const uint8_t *data, unsigned step)
+{
+    return data[1444] ? read_half(data, 1445 + 2 * (step % data[1444])) : step;
+}
+
+bool gseq_host_reserved(const uint8_t *data, unsigned step)
 {
     /* Empty stock steps can still carry the swing-position bit. Reserve both
      * note and lock trigs even when the stock condition later rejects them. */
     if (read_half(data, step * 2) & 5u)
         return true;
-    if (data[1444])
-        step = read_half(data, 1445 + 2 * (step % data[1444]));
+    step = euclidean_step(data, step);
     if (data[1176] == 1 && step < 128)
         return !(read_half(data, 1188 + 2 * step) & 0x8000u);
     return false;
+}
+
+unsigned gseq_host_marker(const uint8_t *copy, unsigned track, unsigned step)
+{
+    enum { NOTE_LIST = 27216, NOTE_INDEX = 38184, NOTE_BYTES = 6 };
+    const uint8_t *data = copy + GSEQ_TRACK_BYTES * track;
+    step = euclidean_step(data, step);
+    if (step >= 128)
+        return 0;
+    unsigned flags = read_half(data, 2 * step), euclidean = data[1176] == 1;
+    if (euclidean ? ((read_half(data, 1188 + 2 * step) & 0x8000u) || (flags & 4)) : !(flags & 5))
+        return 0;
+    unsigned note = read_half(copy, NOTE_INDEX + 2 * (128 * track + step));
+    if (note < (NOTE_INDEX - NOTE_LIST) / NOTE_BYTES) {
+        unsigned pitch = copy[NOTE_LIST + NOTE_BYTES * note + 2];
+        /* Stock also allocates a note entry for a timing-only edit and
+         * writes the default pitch into it. Show a distinct pitch override. */
+        if (pitch < 128 && pitch != data[1157])
+            return 2;
+    }
+    return 1;
 }
 
 static uint32_t make_hit(unsigned track, const uint8_t *copy, const uint8_t *kit,
@@ -111,7 +136,7 @@ uint32_t gseq_produce(unsigned track, const uint8_t *copy, const uint8_t *kit,
         gseq_prepare_phrase(copy, track);
     uint16_t mask = schedule >> 16;
     if (step >= 128 || mode < MODE_FILL ||
-        (mode == MODE_FILL && host_reserved(copy + GSEQ_TRACK_BYTES * track, step)))
+        (mode == MODE_FILL && gseq_host_reserved(copy + GSEQ_TRACK_BYTES * track, step)))
         return gseq_stock_produce(track, copy, kit, step, scratch, offset, swing_offset);
 
     if (!gseq_rhythm_hit(mask, step))

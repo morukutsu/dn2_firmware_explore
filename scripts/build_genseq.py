@@ -20,7 +20,7 @@ from dnfw.patch import area, cbuild
 from build_scale_degrees import scales
 
 STOCK = ROOT / "elektron_binaries/Digitone_II_OS1.11.syx"
-VERSION = "0.4.2-dev"
+VERSION = "0.4.6-dev"
 CODE = 0x46F20000
 SOURCES = [ROOT / "csrc/genseq" / name for name in
            ("prototype.c", "ui.c", "melody.c", "rhythm.c", "schedule.c", "format.c", "hooks.S")]
@@ -29,6 +29,7 @@ HOOKS = (
     (0x40138B5C, "4fefffec48d70c1c", "gseq_enqueue"),
     (0x400D8AE2, "274e0054200b", "gseq_note_hook"),
     (0x40026566, "202800206d10", "gseq_admit_hook"),
+    (0x40027B68, "20394058e554", "gseq_frame_hook"),
     (0x400D967E, "42b942c5a9d0", "gseq_stop_hook"),
     (0x400D83EC, "42b942c5a9d0", "gseq_reset_clock_hook"),
     (0x400DE6FA, "203c0001de6a", "gseq_prepare_hook"),

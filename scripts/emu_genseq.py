@@ -43,12 +43,96 @@ def frames(run):
     return {Path(result["frame"]).stem: result for result in run["results"] if "frame" in result}
 
 
+def images(result):
+    captures = {}
+    for label, row in frames(result).items():
+        path = Path(row["frame"])
+        with Image.open(path) as frame:
+            captures[label] = ImageOps.invert(frame.convert("L"))
+            captures[label].resize((256, 128), Image.Resampling.NEAREST).save(path.with_suffix(".png"))
+    return captures
+
+
+def run_boxed(image, stock, out):
+    """Keep each boxed name visible while real panel turns update its value."""
+    steps = ["wait:80M", *SHORTCUT, *SHORTCUT, "wait:650M"]
+    checks = []
+
+    def edit(name, encoder, counts):
+        steps.extend((f"frame:{name}_before", f"edit:{encoder}:{counts}", "wait:40M", f"frame:{name}_edit"))
+        x = 34 + 25 * ((encoder - 1) % 4)
+        label_y, box_y = (11, 16) if encoder <= 4 else (57, 49)
+        checks.append((name, (x - 11, label_y, x + 12, label_y + 5),
+                       (x - 11, box_y, x + 12, box_y + 8)))
+
+    edit("mode", 1, 10)
+    steps += ["wait:650M", "frame:mode_settled"]
+    edit("bank", 2, 10)
+    edit("pattern", 3, 10)
+    edit("modifier", 4, 10)
+    steps += DOWN
+    edit("advance", 2, 10)
+    steps += DOWN
+    edit("generator", 1, 10)
+    edit("shape", 7, 10)
+    steps += DOWN
+    edit("root", 1, -10)
+    edit("scale", 2, -10)
+    edit("low", 3, 10)
+    edit("high", 4, -10)
+    result = playback.run(image, editor_turns(image, steps), out, base=stock,
+                          runner=sp.panel_drive(), watch=(playback.FAULT_DN2_111,))
+    captures = images(result)
+    for name, label, box in checks:
+        before, active = captures[f"{name}_before"], captures[f"{name}_edit"]
+        assert before.crop(label).getbbox(), name
+        assert before.crop(label).tobytes() == active.crop(label).tobytes(), (name, "label changed")
+        assert before.crop(box).tobytes() != active.crop(box).tobytes(), (name, "value stayed the same")
+    header = (17, 0, 128, 10)
+    before, active, settled = (captures[name] for name in ("mode_before", "mode_edit", "mode_settled"))
+    assert before.crop(header).tobytes() != active.crop(header).tobytes()
+    assert before.crop(header).tobytes() == settled.crop(header).tobytes()
+    assert active.crop((23, 11, 46, 24)).tobytes() == settled.crop((23, 11, 46, 24)).tobytes()
+    print(f"Verified {len(checks)} boxed controls and the MODE drawer lifecycle.")
+
+
 def notes(run, label):
     captured = frames(run)
     start, end = (captured[name]["icount"] for name in (label, label + "_end"))
     events = seqframes.events(row for row in run["captures"] if
                               row["pc"] == f"{playback.EXCHANGE_DN2_111:#x}" and start <= row["icount"] < end)
     return seqframes.note_ons(events), [event for event in events if event.kind == "off"]
+
+
+def run_phrase_controls(image, stock, out):
+    """Exercise wheel, drag and fast motion on every PHRASE numeric control."""
+    settings = json.loads(image.with_name("symbols.json").read_text())["settings"]
+    steps = ["wait:80M", *SHORTCUT, *SHORTCUT, "edit:1:10", "wait:40M", *DOWN]
+    cases = []
+    # Check the percentage controls with the initial finite phrase length.
+    for name, encoder, field in (("MUT", 4, 9), ("HOLD", 5, 7), ("REGEN", 6, 10), ("LEN", 1, 6)):
+        peek = f"peek:{settings + field:#x}:1"
+        steps.append(peek)
+        for gesture, raw, turns, limit in (("wheel", 10, 6, 1), ("fast", 30, 4, 3),
+                                           ("drag", 10, 5, 1), ("reverse drag", -10, 7, 1)):
+            if gesture == "drag":
+                steps += [f"press:{40 + encoder}", "wait:10M"]
+            steps += [step for _ in range(turns) for step in (f"turn:{encoder}:{raw}", "wait:5M", peek)]
+            cases.append((name, gesture, raw, turns, limit))
+        steps += [f"release:{40 + encoder}", "wait:40M"]
+    result = playback.run(image, editor_turns(image, steps), out, base=stock,
+                          runner=sp.panel_drive(), watch=(playback.FAULT_DN2_111,))
+    samples = iter(int(row["hex"], 16) for row in result["results"] if "peek" in row)
+    for name, gesture, raw, turns, limit in cases:
+        if gesture == "wheel":
+            last = next(samples)
+        values = [last, *(next(samples) for _ in range(turns))]
+        last = values[-1]
+        sign = 1 if raw > 0 else -1
+        changes = [(after - before) * sign for before, after in zip(values, values[1:])]
+        assert all(0 <= change <= limit for change in changes), (name, gesture, values)
+        assert max(changes) == limit, (name, gesture, values)
+        print(f"{name} {gesture}: {values}")
 
 
 def run(image, stock, out):
@@ -103,15 +187,6 @@ def run(image, stock, out):
     trial_capture = (*common["capture"], f"{admit_pc}:1:1", f"{inline_pc}:1:1")
     trial = playback.run(image, editor_turns(image, steps), out / "prototype", base=stock,
                          **{**common, "capture": trial_capture})
-
-    def images(result):
-        captures = {}
-        for label, row in frames(result).items():
-            path = Path(row["frame"])
-            with Image.open(path) as frame:
-                captures[label] = ImageOps.invert(frame.convert("L"))
-                captures[label].resize((256, 128), Image.Resampling.NEAREST).save(path.with_suffix(".png"))
-        return captures
 
     sf, pf = images(control), images(trial)
     def pixels(frame):
@@ -174,24 +249,24 @@ def run(image, stock, out):
     assert pixels(pf["melody"]) == pixels(pf["melody_clamped"])
     assert pixels(pf["range_settled"]) == pixels(pf["pitch_return"])
     assert pixels(pf["actions"]) != pixels(pf["pitch_return"])
-    toggle = (24, 18, 43, 28)
+    toggle = (23, 16, 46, 25)
     assert pf["editor_off"].crop(toggle).tobytes() != pf["trig"].crop(toggle).tobytes()
     header = (17, 0, 128, 10)
     for before, after in (("gen", "gen_edited"), ("phrase_before_turn", "phrase_edited"),
                           ("pitch_before_turn", "pitch_edited"), ("melody_before_turn", "melody_edited")):
         assert pixels(pf[before]) != pixels(pf[after]), after
         assert pf[before].crop(header).tobytes() != pf[after].crop(header).tobytes(), after
-    mode_label = (23, 30, 44, 38)
+    mode_label = (23, 11, 46, 16)
     assert pf["editor_off"].crop(header).tobytes() != pf["drawer_expired"].crop(header).tobytes()
     assert pf["drawer_expired"].crop(header).tobytes() == pf["trig"].crop(header).tobytes()
-    assert pf["mode_active"].crop(mode_label).tobytes() != pf["trig"].crop(mode_label).tobytes()
+    assert pf["mode_active"].crop(mode_label).tobytes() == pf["trig"].crop(mode_label).tobytes()
     assert pf["editor_off"].crop(mode_label).tobytes() == pf["trig"].crop(mode_label).tobytes()
-    gauge = (49, 40, 69, 58)
-    activity_label = (47, 58, 73, 64)
+    gauge = (49, 52, 70, 55)
+    activity_label = (47, 56, 73, 64)
     assert pf["activity_active"].crop(gauge).tobytes() == pf["activity_idle"].crop(gauge).tobytes()
     assert pf["activity_active"].crop(activity_label).tobytes() != pf["activity_idle"].crop(activity_label).tobytes()
-    var_knob = (23, 39, 45, 57)
-    var_label = (23, 58, 45, 64)
+    var_knob = (23, 51, 46, 56)
+    var_label = (23, 56, 46, 64)
     assert pf["var_none_message"].crop(header).tobytes() != pf["var_none_idle"].crop(header).tobytes()
     assert pf["var_none_message"].crop(var_knob).tobytes() == pf["var_none_idle"].crop(var_knob).tobytes()
     assert pf["var_shift_ready"].crop(var_knob).tobytes() == pf["var_neighbor_ready"].crop(var_knob).tobytes()
@@ -200,7 +275,7 @@ def run(image, stock, out):
         assert ready.crop(var_knob).tobytes() != pf["var_none_message"].crop(var_knob).tobytes()
         assert ready.crop(var_label).tobytes() != active.crop(var_label).tobytes()
         assert ready.crop(var_knob).tobytes() != active.crop(var_knob).tobytes()
-    for box, changed_at in (((74, 12, 99, 31), "low_changed"), ((100, 12, 124, 31), "range")):
+    for box, changed_at in (((73, 17, 96, 25), "low_changed"), ((98, 17, 121, 25), "range")):
         values = [pf[page].crop(box).tobytes() for page in ("pitch", "low_changed", "range")]
         assert (values[0] != values[1]) == (changed_at == "low_changed")
         assert (values[1] != values[2]) == (changed_at == "range")
@@ -293,13 +368,17 @@ def run_controls(image, stock, out):
         return [step for _ in values for step in
                 (f"turn:{encoder}:{counts}", "wait:5M", f"peek:{symbols['settings'] + field:#x}:1")]
 
+    pat_peek = f"peek:{symbols['settings'] + 2:#x}:1"
+    pat_runs = ((10, 5, 1), (30, 14, 3), (-10, 6, 1), (-30, 14, 3))
+    pat = [pat_peek, *(step for counts, length, _ in pat_runs for _ in range(length)
+                       for step in (f"turn:3:{counts}", "wait:5M", pat_peek))]
     panel = [
-        *boot, *SHORTCUT, *SHORTCUT, *level,
+        *boot, *SHORTCUT, *SHORTCUT, *level, *pat,
         *turns(2, 1, [0, 1, 1, 1, 2, 2, 2, 2]),                  # BANK
         "tap:14", "wait:40M", "press:17", "wait:5M",
         *turns(1, 6, [8, 12, 16, 24]),                           # LEN
         "release:17", "wait:10M",
-        *turns(2, 7, [0, 3, 6, 9]),                              # HOLD
+        *turns(5, 7, [0, 1, 2, 3]),                              # HOLD
         *turns(3, 8, [0, 1, 1, 1, 2, 2]),                        # PHASE
         *DOWN, *DOWN,
         *turns(3, 20, [48, 49, 49, 49, 50, 50]),                 # LOW
@@ -326,6 +405,17 @@ def run_controls(image, stock, out):
                 assert first.crop(gutter).tobytes() != last.crop(gutter).tobytes()
     values = iter(int.from_bytes(bytes.fromhex(row["hex"]), signed=True)
                   for row in trial["results"] if "peek" in row and len(row["hex"]) == 2)
+    last = next(values)
+    assert last == 0
+    for counts, length, limit in pat_runs:
+        positions = [last, *(next(values) for _ in range(length))]
+        changes = [(after - before) * (1 if counts > 0 else -1)
+                   for before, after in zip(positions, positions[1:])]
+        assert min(changes) >= 0 and max(changes) == limit, (counts, positions)
+        last = positions[-1]
+        if abs(counts) == 30:
+            assert last == (31 if counts > 0 else 0), positions
+        print(f"PAT {counts:+} counts: {positions}")
     for field, expected in cases:
         actual = [next(values) for _ in expected]
         assert actual == expected, (field, actual, expected)
@@ -346,6 +436,10 @@ if __name__ == "__main__":
     checks.add_argument("--scope", action="store_true", help="check chord and track isolation")
     checks.add_argument("--routing", action="store_true", help="check generated pitches through arp and layering")
     checks.add_argument("--controls", action="store_true", help="check encoder filtering and FUNC shortcuts")
+    checks.add_argument("--boxed", action="store_true", help="check labels and values during boxed-control edits")
+    checks.add_argument("--phrase-controls", action="store_true", help="check PHRASE encoder travel")
     args = parser.parse_args()
-    check = run_scope if args.scope else run_routing if args.routing else run_controls if args.controls else run
+    check = {"scope": run_scope, "routing": run_routing, "controls": run_controls,
+             "boxed": run_boxed, "phrase_controls": run_phrase_controls}
+    check = next((handler for flag, handler in check.items() if getattr(args, flag)), run)
     check(args.image, args.stock, args.out.resolve())

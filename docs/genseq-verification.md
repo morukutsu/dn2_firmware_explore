@@ -70,7 +70,7 @@ setting a supported load limit.
 ./tools/with_m68k_gcc13.sh .venv/bin/python scripts/build_genseq.py \
   --performance-probe --out out/genseq/performance
 .venv/bin/python scripts/emu_genseq_perf.py \
-  out/genseq/performance/genseq-0.4.2-dev-perf_DN2_1.11.syx
+  out/genseq/performance/genseq-0.4.6-dev-perf_DN2_1.11.syx
 ```
 
 Use `--staggered` to separate host onsets and `--max-tempo` to turn
@@ -97,7 +97,7 @@ out=out/genseq/persistence
 ./tools/with_m68k_gcc13.sh .venv/bin/python scripts/build_genseq.py \
   --persistence-probe --lfo4-base "$out/lfo4-base.syx" --out "$out/lfo4"
 ../digikit-up/.venv/bin/python scripts/emu_genseq_persist.py \
-  "$out/lfo4/genseq-lfo4-0.4.2-dev-persist_DN2_1.11.syx"
+  "$out/lfo4/genseq-lfo4-0.4.6-dev-persist_DN2_1.11.syx"
 ```
 
 The working-state writer, copy and clear, preset replacement, cold
@@ -130,3 +130,65 @@ producer's record pointer and the source steps ran 5, 9, 13, 1 in order.
 The producer ran about one step before each admission. The capture still
 needs an explicit stock cycle boundary because a source can have no trig
 on its first step.
+
+## Compact editor and ANCHOR on OS 1.11
+
+The scheduler publishes the track step at `0x446483d0`, the subdivision
+counter at `0x42c5a974`, and their deadline timestamp at `0x44648480`.
+The live speed index at `0x42c5a9d9` selects 3–30 subdivisions per step
+from the stock table. Each subdivision advances the deadline clock by
+900,000 units. The scheduler can publish a timestamp before the audio
+cursor reaches it. The signed local difference is part of the projection
+from the published step to the actual deadline.
+
+The note hook reads the current queue bucket's final deadline at
+`[fp−44]+4`. The record's own timestamp precedes the stock microtiming
+adjustment. The frame hook at `0x40027b68` advances silent tracks through
+the last timestamp the frame could dispatch, one unit below its strict
+cutoff. Both paths use the same anchor projection. The editor reads the
+slot and note history. It performs no clock advancement or mutation.
+
+The 16-step SEQ and silent GEN cases with LEN 5 visited all five regions in
+the same order. The programmed microtiming test moved a step-4 note across
+the first boundary. It selected the second region on three consecutive
+cycles. The two-track FILL case used a 16-step track at 1× and a seven-step
+track at 2× with swing and returned different position sequences. The
+silent GEN test requested five animation redraws over 255 UI ticks.
+The stopped plot made no further animation requests, including after
+leaving the editor and restarting playback. A fresh PLAY on the same
+pattern cleared the previous note history. The slots and mutation values
+at the sampled cycle positions were identical with GEN at ACT 0 and 100.
+
+The compact editor peaked at 41,145 instructions per draw after excluding
+nested audio frames. The sampled 0.4.2-dev editor reached 39,506 by the same
+method. The compact measurement includes the live plot.
+
+The 16-track, 300 BPM, 2× benchmark exercised 64 regions on one-step
+tracks. SEQ and GEN had zero pitch misses, regeneration misses, pool
+drops, or firmware faults. Peak audio-frame spans were 97,036 and
+96,332 emulator instructions. The peak ANCHOR clock pass was 11,339
+instructions, including up to 154 instructions for one slot entry and
+mutation. The 0.4.2-dev EVT reference peaked at 89,794 frame instructions
+for SEQ and 89,090 for GEN, with 16-step tracks. On that same original
+workload, 0.4.3-dev EVT produced the same note and release sequence as
+0.4.2-dev. Test actual frame timing and audible behavior on the instrument.
+
+Schema 3 preserved alternating EVT and ANC tracks, LFO4 settings, and stock
+trigs across all 128 raw project records. The normal build still keeps GEN
+SEQ settings in RAM.
+
+For the owner-run timing check, start with LEN 5 on a 16-step track. Check
+that the playhead advances through rests and that moving a trig across a
+region boundary changes its pitch. Repeat with retrigs, mixed track speeds,
+and external clock. Then align onsets on 16 tracks at 300 BPM and 2×, using
+short tracks, LEN 64, and high MUT. Listen for missed or late notes, stuck
+voices, and audible glitches while the editor is open and after leaving it.
+
+```sh
+./tools/with_m68k_gcc13.sh .venv/bin/python scripts/build_genseq.py \
+  --performance-probe --out out/genseq/anchor/probe
+image=out/genseq/anchor/probe/genseq-0.4.6-dev-perf_DN2_1.11.syx
+.venv/bin/python scripts/emu_genseq_anchor.py "$image" --mixed-fill --microtimed --density
+.venv/bin/python scripts/emu_genseq_perf.py "$image" --tracks 16 --modes seq gen \
+  --max-tempo --anchor-length 64 --track-length 1 --out out/genseq/anchor/short
+```

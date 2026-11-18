@@ -1,7 +1,7 @@
 #include "format.h"
 
 enum { HEADER_BYTES = 16, TRACK_BYTES = 24,
-       PAYLOAD_BYTES = TRACK_BYTES * GSEQ_TRACKS, SCHEMA = 2 };
+       PAYLOAD_BYTES = TRACK_BYTES * GSEQ_TRACKS, SCHEMA = 3 };
 
 const struct gseq_track gseq_defaults = {
     .control = { [ACT] = 100, [LEN] = 8, [GEN_MODE] = 1,
@@ -23,6 +23,7 @@ static const struct { uint8_t width; int8_t min, max; } fields[CONTROL_COUNT] = 
     [LOW] = {7, 0, 127}, [HIGH] = {7, 0, 127}, [PITCH_BIAS] = {8, -100, 100},
     [MOVE] = {8, -100, 100}, [REPEAT] = {7, 0, 100}, [TONIC] = {7, 0, 100},
     [RESOLVE] = {7, 0, 100},
+    [ADV] = {0, ADV_EVENT, ADV_ANCHOR},
 };
 
 void gseq_control_range(unsigned field, int *low, int *high)
@@ -38,7 +39,7 @@ static bool valid(const struct gseq_track *track)
         if (c[i] < fields[i].min || c[i] > fields[i].max)
             return false;
     return c[LOW] <= c[HIGH] && (!c[LEN] || c[PHASE] < c[LEN])
-        && (c[GEN_MODE] != 2 || c[LEN])
+        && ((c[GEN_MODE] != 2 && c[ADV] != ADV_ANCHOR) || c[LEN])
         && (c[MOD] != MOD_FACTOR || (c[VAR] >= 0 && c[VAR] <= 7))
         && (!c[TRIG_MODE] || (track->rhythm_seed && track->melody_seed));
 }
@@ -46,7 +47,8 @@ static bool valid(const struct gseq_track *track)
 static uint32_t payload_crc(const uint8_t *record)
 {
     uint32_t crc = UINT32_MAX;
-    for (unsigned i = HEADER_BYTES; i < GSEQ_RECORD_BYTES; ++i) {
+    unsigned first = record[4] == SCHEMA ? 12 : HEADER_BYTES;
+    for (unsigned i = first; i < GSEQ_RECORD_BYTES; ++i) {
         crc ^= record[i];
         for (unsigned bit = 0; bit < 8; ++bit)
             crc = (crc >> 1) ^ ((crc & 1u) ? 0xedb88320u : 0);
@@ -57,7 +59,7 @@ static uint32_t payload_crc(const uint8_t *record)
 static void pack_track(uint8_t *out, const struct gseq_track *track)
 {
     unsigned bit = 0;
-    for (unsigned i = 0; i < CONTROL_COUNT; ++i) {
+    for (unsigned i = 0; i < ADV; ++i) {
         unsigned value = (uint8_t)track->control[i];
         for (unsigned width = fields[i].width; width; --width, ++bit)
             out[bit / 8] |= ((value >> (width - 1)) & 1u) << (7 - bit % 8);
@@ -68,10 +70,10 @@ static void pack_track(uint8_t *out, const struct gseq_track *track)
     out[23] = track->melody_seed;
 }
 
-static bool unpack_track(const uint8_t *in, struct gseq_track *track)
+static bool unpack_track(const uint8_t *in, struct gseq_track *track, bool anchor)
 {
     unsigned bit = 0;
-    for (unsigned i = 0; i < CONTROL_COUNT; ++i) {
+    for (unsigned i = 0; i < ADV; ++i) {
         int value = 0;
         for (unsigned width = fields[i].width; width; --width, ++bit)
             value = (value << 1) | ((in[bit / 8] >> (7 - bit % 8)) & 1);
@@ -82,6 +84,7 @@ static bool unpack_track(const uint8_t *in, struct gseq_track *track)
     }
     track->rhythm_seed = (in[20] << 8) | in[21];
     track->melody_seed = (in[22] << 8) | in[23];
+    track->control[ADV] = anchor ? ADV_ANCHOR : ADV_EVENT;
     return valid(track);
 }
 
@@ -102,6 +105,8 @@ bool gseq_save(uint8_t kit[GSEQ_KIT_BYTES],
     for (unsigned i = 0; i < GSEQ_TRACKS; ++i) {
         if (!valid(&tracks[i]))
             return false;
+        if (tracks[i].control[ADV] == ADV_ANCHOR)
+            record[12 + i / 8] |= 1u << (7 - i % 8);
         pack_track(record + HEADER_BYTES + i * TRACK_BYTES, &tracks[i]);
     }
 
@@ -129,13 +134,15 @@ bool gseq_load(const uint8_t kit[GSEQ_KIT_BYTES],
     for (unsigned i = 0; i < 4; ++i)
         crc = (crc << 8) | record[8 + i];
     bool ok = record[0] == 'G' && record[1] == 'S' && record[2] == 'E' && record[3] == 'Q'
-        && record[4] == SCHEMA && record[5] == revision
+        && (record[4] == SCHEMA || record[4] == 2) && record[5] == revision
         && ((record[6] << 8) | record[7]) == PAYLOAD_BYTES
-        && !(record[12] | record[13] | record[14] | record[15])
+        && !(record[14] | record[15])
+        && (record[4] == SCHEMA || !(record[12] | record[13]))
         && crc == payload_crc(record);
 
     for (unsigned i = 0; ok && i < GSEQ_TRACKS; ++i)
-        ok = unpack_track(record + HEADER_BYTES + i * TRACK_BYTES, &tracks[i]);
+        ok = unpack_track(record + HEADER_BYTES + i * TRACK_BYTES, &tracks[i],
+                          record[12 + i / 8] & (1u << (7 - i % 8)));
     if (!ok)
         for (unsigned i = 0; i < GSEQ_TRACKS; ++i)
             gseq_default_track(&tracks[i]);

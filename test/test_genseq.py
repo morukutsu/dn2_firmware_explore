@@ -14,13 +14,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 SPANS = ((0x18, 0x1C), (0x170C, 0x1744), (0x1748, 0x174C), (0x28B0, 0x2A00))
-HEADER = bytes.fromhex("47 53 45 51 02 01 01 80 2f a5 2a db 00 00 00 00")
+SCHEMA2_HEADER = bytes.fromhex("47 53 45 51 02 01 01 80 2f a5 2a db 00 00 00 00")
 FIRST = bytes.fromhex("55 bd 92 20 00 00 00 20 00 90 01 94 79 23 09 00 1b 06 40 00 12 34 be ef")
 OFF = bytes.fromhex("00 00 c8 20 00 00 00 20 00 90 01 94 79 23 09 00 00 06 40 00 00 00 00 00")
 
 
 class Track(ct.Structure):
-    _fields_ = [("control", ct.c_int8 * 27), ("rhythm", ct.c_uint16), ("melody", ct.c_uint16)]
+    _fields_ = [("control", ct.c_int8 * 28), ("rhythm", ct.c_uint16), ("melody", ct.c_uint16)]
 
 
 class Stream(ct.Structure):
@@ -92,6 +92,8 @@ def codec(tmp_path_factory):
         func.restype = ct.c_bool
     loaded.gseq_rhythm_mask.argtypes = [ct.POINTER(Track)]
     loaded.gseq_rhythm_mask.restype = ct.c_uint16
+    loaded.gseq_anchor_region.argtypes = [ct.c_uint32, ct.c_uint32, ct.c_uint]
+    loaded.gseq_anchor_region.restype = ct.c_uint
     for name in ("build", "phase", "restart", "next"):
         func = getattr(loaded, f"gseq_phrase_{name}")
         func.argtypes = [ct.POINTER(Phrase), ct.POINTER(Track)]
@@ -133,18 +135,39 @@ def fixture_tracks(codec):
 
 def test_codec_matches_spec_and_preserves_stock_bytes(codec):
     tracks = fixture_tracks(codec)
+    tracks[0].control[27] = tracks[15].control[27] = 1
+    payload = FIRST + 15 * OFF
+    reserved = bytes.fromhex("80 01 00 00")
+    crc = zlib.crc32(reserved + payload).to_bytes(4, "big")
+    record = bytes.fromhex("47 53 45 51 03 01 01 80") + crc + reserved + payload
     kit = Kit.from_buffer_copy(bytes([0xA5]) * ct.sizeof(Kit))
     assert codec.gseq_save(kit, tracks, 1)
-    assert bytes(kit) == scatter(HEADER + FIRST + 15 * OFF)
+    assert bytes(kit) == scatter(record)
     restored = Tracks()
     assert codec.gseq_load(kit, restored, 1)
     assert bytes(restored) == bytes(tracks)
+    corrupt = bytearray(record)
+    corrupt[12] ^= 1
+    assert not codec.gseq_load(Kit.from_buffer_copy(scatter(corrupt)), restored, 1)
+    assert codec.gseq_load(Kit.from_buffer_copy(scatter(SCHEMA2_HEADER + payload)), restored, 1)
+    assert bytes(restored) == bytes(fixture_tracks(codec))
+
+
+@pytest.mark.parametrize("cycle,length", [(2_700_000, 64), (86_400_000, 5),
+                                         (3_456_000_000, 64), (3_456_000_000, 1)])
+def test_anchor_regions_follow_exact_substep_boundaries(codec, cycle, length):
+    for slot in range(length):
+        boundary = (slot * cycle + length - 1) // length
+        assert codec.gseq_anchor_region(boundary, cycle, length) == slot
+        if slot:
+            assert codec.gseq_anchor_region(boundary - 1, cycle, length) == slot - 1
+    assert codec.gseq_anchor_region(cycle - 1, cycle, length) == length - 1
 
 
 @pytest.mark.parametrize("offset,mask", [(0, 1), (5, 2), (7, 1), (10, 1), (15, 1),
                                           (40, 0x30), (42, 0x30), (40, 0x40), (35, 0xff)])
 def test_codec_rejects_invalid_record_and_resets_all_tracks(codec, offset, mask):
-    record = bytearray(HEADER + FIRST + 15 * OFF)
+    record = bytearray(SCHEMA2_HEADER + FIRST + 15 * OFF)
     record[offset] ^= mask
     if offset in (35, 40, 42):
         # A valid CRC cannot hide an invalid field, enum, or active seed.

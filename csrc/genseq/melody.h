@@ -43,6 +43,11 @@ void gseq_phrase_build(struct gseq_phrase *phrase, const struct gseq_track *cfg)
 void gseq_phrase_restart(struct gseq_phrase *phrase, const struct gseq_track *cfg);
 void gseq_phrase_phase(struct gseq_phrase *phrase, const struct gseq_track *cfg);
 uint16_t gseq_phrase_next(struct gseq_phrase *phrase, const struct gseq_track *cfg);
+bool gseq_phrase_enter(struct gseq_phrase *phrase, const struct gseq_track *cfg, unsigned slot);
+bool gseq_phrase_next_event(struct gseq_phrase *phrase, const struct gseq_track *cfg, uint16_t *latent);
+uint32_t gseq_anchor_boundary(uint32_t cycle, unsigned length, unsigned slot);
+unsigned gseq_anchor_region(uint32_t position, uint32_t cycle, unsigned length);
+uint16_t gseq_shape_value(unsigned shape, unsigned slot, unsigned length);
 bool gseq_phrase_draft(const struct gseq_phrase *phrase, const struct gseq_track *cfg,
                        struct gseq_draft_step *step);
 void gseq_phrase_prepare(const struct gseq_track *cfg, struct gseq_draft_step *step);

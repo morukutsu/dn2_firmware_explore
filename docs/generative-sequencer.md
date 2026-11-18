@@ -46,7 +46,7 @@ reservations before the conditions run. GEN builds its own inline synth
 record on the existing track clock. The stock scheduler queues and releases
 it.
 
-The build keeps its settings in RAM. The standalone schema 2 codec follows
+The build keeps its settings in RAM. The standalone schema 3 codec follows
 the 400-byte layout below. Project persistence remains unwired.
 
 ### Interactive emulator
@@ -81,9 +81,9 @@ FUNC+LEVEL/DATA opens the stock preset list.
 
 ```sh
 ./tools/with_m68k_gcc13.sh .venv/bin/python scripts/build_genseq.py
-.venv/bin/python scripts/emu_genseq.py out/genseq/genseq-0.4.2-dev_DN2_1.11.syx \
-  --out out/genseq/0.4.2-dev-ui
-.venv/bin/python scripts/emu_genseq_rhythm.py out/genseq/genseq-0.4.2-dev_DN2_1.11.syx
+.venv/bin/python scripts/emu_genseq.py out/genseq/genseq-0.4.3-dev_DN2_1.11.syx \
+  --out out/genseq/0.4.3-dev-ui
+.venv/bin/python scripts/emu_genseq_rhythm.py out/genseq/genseq-0.4.3-dev_DN2_1.11.syx
 ./tools/with_m68k_gcc13.sh .venv/bin/pytest -q test/test_genseq.py
 ```
 
@@ -123,13 +123,13 @@ and refreshes the combined image's `/modinfo` record.
 
 ```sh
 stock=elektron_binaries/Digitone_II_OS1.11.syx
-out=out/genseq/hardware-test-0.4.2-dev
+out=out/genseq/hardware-test-0.4.3-dev
 .venv/bin/python -m dnfw.cli.main mods apply "$stock" \
   --mod waverider --mod lfopreview -o "$out/waverider-lfopreview-base.syx"
 ./tools/with_m68k_gcc13.sh .venv/bin/python scripts/build_genseq.py \
   --stock "$stock" --waverider-preview-base "$out/waverider-lfopreview-base.syx" --out "$out"
 .venv/bin/python -m dnfw.cli.main check \
-  "$out/genseq-waverider-lfopreview-0.4.2-dev_DN2_1.11.syx" --stock "$stock"
+  "$out/genseq-waverider-lfopreview-0.4.3-dev_DN2_1.11.syx" --stock "$stock"
 ```
 
 On a Waverider track, program four single-note trigs and enable SEQ in GEN
@@ -206,7 +206,7 @@ mode is the complete pitch policy in this design. [Stock note editing harness](.
 | Page | Encoder assignments | When controls apply |
 |---|---|---|
 | **TRIG** | A MODE, B BANK, C PAT, D MOD, E VAR, F ACT | BANK through ACT affect playback in FILL and GEN. VAR requires a modifier |
-| **PHRASE** | A LEN, B HOLD, C PHASE, D MUT, E REGEN | HOLD, PHASE, melodic MUT and REGEN apply to a finite phrase |
+| **PHRASE** | A LEN, B ADV, C PHASE, D MUT, E HOLD, F REGEN | ADV selects EVENT or ANCHOR. HOLD and REGEN require a finite EVENT phrase |
 | **GEN** | A MODE, B BIAS, C STEP, D DIR, E GRAV, F MOMENT, G SHAPE | BIAS applies to RANDOM and WALK. STEP, DIR, GRAV and MOMENT apply to WALK. SHAPE applies to SHAPE mode |
 | **PITCH** | A ROOT, B SCALE, C LOW, D HIGH, E BIAS | ROOT and SCALE each support inheritance from KEYBOARD SETUP |
 | **MELODY** | A MOVE, B REPEAT, C TONIC, D RESOLVE | MOVE and REPEAT need a previous note. TONIC and RESOLVE use a named scale |
@@ -389,6 +389,15 @@ the programmed pattern. Only COMMIT TO PATTERN writes a generated hit into
 a stock step.
 
 ## PHRASE and GEN
+
+**EVENT** advances on eligible note events. **ANCHOR** divides one stock
+track cycle into LEN regions. PHASE rotates which stored value each region
+uses. In ANCHOR, the clock moves through rests, and several notes in one
+region share the same latent value. The previous generated pitch can still
+change which note that value selects. MUT rolls once on each revisit to a
+region. HOLD and REGEN apply to EVENT and keep their settings when ANCHOR
+is selected. Selecting ANCHOR from INF sets LEN to 8.
+
 
 A phrase is a per-track loop of latent values. Each eligible event
 can advance the loop once. The loop runs in note events rather than steps.
@@ -619,14 +628,16 @@ under stock ownership.
 | Offset in logical record | Bytes | Field |
 |---|---:|---|
 | `[0x000, 0x004)` | 4 | ASCII magic `GSEQ` (`47 53 45 51`) |
-| `[0x004, 0x005)` | 1 | Data schema version. Use 2 for this layout |
+| `[0x004, 0x005)` | 1 | Data schema version. Write 3. Schema 2 loads as EVENT |
 | `[0x005, 0x006)` | 1 | Seed and sampling algorithm revision. Assign when the algorithm is frozen |
 | `[0x006, 0x008)` | 2 | Payload length `0x0180` (384 bytes) |
-| `[0x008, 0x00C)` | 4 | CRC-32/ISO-HDLC over logical bytes `[0x010, 0x190)` |
-| `[0x00C, 0x010)` | 4 | Reserved, zero |
+| `[0x008, 0x00C)` | 4 | CRC-32/ISO-HDLC over logical bytes `[0x00C, 0x190)` |
+| `[0x00C, 0x00E)` | 2 | ADV bitmap, track 1 at the most significant bit, 0 EVENT and 1 ANCHOR |
+| `[0x00E, 0x010)` | 2 | Reserved, zero |
 
-Use big-endian integers. Compute the CRC over the gathered payload in
-track order. It matches Python's `zlib.crc32(payload)`. The schema version
+Use big-endian integers. Schema 3 covers the ADV bitmap, two reserved bytes,
+and the track payload in its CRC. Schema 2 covers only the track payload.
+The schema version
 identifies the byte layout. The algorithm revision identifies how the
 firmware expands seeds and samples values from the same controls.
 
@@ -687,7 +698,7 @@ uses a finite LEN. A missing or invalid extension loads the pattern with
 its generative tracks OFF. A stock Save As that discards the extension
 still leaves the project's programmed notes available on modded firmware.
 
-### Worked encoding
+### Worked schema 2 encoding
 
 Track 1 stores SEQ, MATH 12, SHIFT −3, ACT 73%, MOVE −40,
 rhythm seed `0x1234` and melody seed `0xBEEF`. Tracks 2–16 use OFF
@@ -701,7 +712,7 @@ Tracks 2–16         00 00 c8 20 00 00 00 20 00 90 01 94 79 23 09 00 00 06 40 0
 ```
 
 Repeat the last row fifteen times. VAR −3 is `0x1D` in five bits.
-The payload CRC is `0x2FA52ADB`.
+The schema 2 payload CRC is `0x2FA52ADB`. Schema 3 adds the four header bytes at offset 12 to the checksum input.
 
 ### Evidence and durability conditions
 

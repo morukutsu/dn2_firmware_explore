@@ -102,6 +102,7 @@ def main():
         cfg[0] = 1  # SEQ
         cfg[2] = pattern % 32
         cfg[6] = pattern % 64 + 1
+        cfg[27] = pattern & 1  # ADV, alternating EVENT and ANCHOR.
         cfg += struct.pack(">HH", pattern + 1, pattern + 129)
         expected.append(bytes(cfg))
         m.write(settings + slot(pattern), expected[-1])
@@ -124,6 +125,7 @@ def main():
         assert m.read(settings + slot(pattern), len(cfg)) == cfg, pattern
         assert m.long(symbols["schedules"] + slot(pattern) // CONFIG_BYTES * 4) & 3 == 1
         assert m.word(trig_at(project, pattern)) & 1, pattern
+    assert m.long(symbols["gseq_anchor_count"]) == 64
     check_lfo4(save(m, project, progress))
     print("128 pattern kits round-tripped through stock save/load with GEN SEQ and LFO4.")
 
