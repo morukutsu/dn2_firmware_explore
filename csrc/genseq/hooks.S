@@ -64,10 +64,25 @@ gseq_show:
 
     .global gseq_project_hook
 gseq_project_hook:
+#ifdef GSEQ_PERSISTENCE_PROBE
+    jmp     gseq_load_project
+    .global gseq_stock_load_project
+gseq_stock_load_project:
+    lea     -36(%sp),%sp
+    movem.l %d2-%d5/%a2-%fp,(%sp)
+    jmp     0x400e178a
+
+    .global gseq_stock_save_project
+gseq_stock_save_project:
+    lea     -44(%sp),%sp
+    movem.l %d2-%d7/%a2-%fp,(%sp)
+    jmp     0x400e149c
+#else
     lea     -36(%sp),%sp
     movem.l %d2-%d5/%a2-%fp,(%sp)
     jsr     gseq_reset
     jmp     0x400e178a
+#endif
 
     .global gseq_stock_produce
 gseq_stock_produce:

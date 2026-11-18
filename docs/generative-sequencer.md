@@ -8,6 +8,8 @@ The prototype section describes the installed controls.
 
 ## OS 1.11 developer prototype
 
+[GEN SEQ user guide](genseq-manual.md) · [Playback and storage verification](genseq-verification.md)
+
 Open Euclidean with FUNC + SEQ. Press it again for GEN SEQ. Move through
 TRIG, PHRASE, GEN, PITCH and MELODY with UP and DOWN. The stock drawer
 shows the page name during navigation and the full parameter name during
@@ -79,9 +81,9 @@ FUNC+LEVEL/DATA opens the stock preset list.
 
 ```sh
 ./tools/with_m68k_gcc13.sh .venv/bin/python scripts/build_genseq.py
-.venv/bin/python scripts/emu_genseq.py out/genseq/genseq-0.4.1_DN2_1.11.syx \
-  --out out/genseq/0.4.1-ui
-.venv/bin/python scripts/emu_genseq_rhythm.py out/genseq/genseq-0.4.1_DN2_1.11.syx
+.venv/bin/python scripts/emu_genseq.py out/genseq/genseq-0.4.2-dev_DN2_1.11.syx \
+  --out out/genseq/0.4.2-dev-ui
+.venv/bin/python scripts/emu_genseq_rhythm.py out/genseq/genseq-0.4.2-dev_DN2_1.11.syx
 ./tools/with_m68k_gcc13.sh .venv/bin/pytest -q test/test_genseq.py
 ```
 
@@ -121,13 +123,13 @@ and refreshes the combined image's `/modinfo` record.
 
 ```sh
 stock=elektron_binaries/Digitone_II_OS1.11.syx
-out=out/genseq/hardware-test-0.4.1
+out=out/genseq/hardware-test-0.4.2-dev
 .venv/bin/python -m dnfw.cli.main mods apply "$stock" \
   --mod waverider --mod lfopreview -o "$out/waverider-lfopreview-base.syx"
 ./tools/with_m68k_gcc13.sh .venv/bin/python scripts/build_genseq.py \
   --stock "$stock" --waverider-preview-base "$out/waverider-lfopreview-base.syx" --out "$out"
 .venv/bin/python -m dnfw.cli.main check \
-  "$out/genseq-waverider-lfopreview-0.4.1_DN2_1.11.syx" --stock "$stock"
+  "$out/genseq-waverider-lfopreview-0.4.2-dev_DN2_1.11.syx" --stock "$stock"
 ```
 
 On a Waverider track, program four single-note trigs and enable SEQ in GEN
@@ -534,37 +536,42 @@ neutral pitch BIAS and MOVE, REPEAT at 25%, and TONIC and RESOLVE at zero.
 
 ## Commit to ordinary trigs
 
-**COMMIT TO PATTERN** captures the selected track over one complete track
-cycle from the next cycle boundary. Capture the inputs to stock layering and
-arp so the destination can apply both from the copied settings. Use one
-configuration for the capture. Cancel if an edit or pattern change
-invalidates it.
+**COMMIT TO PATTERN** arms capture for the selected synth track. Capture
+starts at the next stock track-cycle boundary and ends at the following
+boundary. If transport is stopped, the editor asks for PLAY. An edit, source
+switch, or STOP during capture cancels it. The completed capture stays
+available after STOP.
 
-Show the captured event count and destination before confirmation. Use a
-stock copy of the source pattern in the selected empty slot, with the
-source sounds and transposes. Store the pitch before transpose so the copied
-stock transpose applies once.
+Show the captured trig count and source track length. Encoder A selects the
+destination pattern. Encoder B selects the destination synth track. Default
+to the source pattern and track. Occupied destinations are valid, including
+an in-place overwrite. YES opens a confirmation that names the destination
+and shows the resulting length and any replacement. NO backs out.
 
-In SEQ, replace the copied pitches for host trigs that fired in the capture.
-Keep their timing, conditions, locks and retrigs. A trig that stayed silent
-keeps its copied pitch. In FILL, also write the representable added hits with
-their captured timing and the stock defaults used to play them.
+Use the stock track-sequence paste and undo path after its destination
+arguments and side effects are verified. Use a private capture buffer
+so the normal clipboard stays available. Resize the destination track to
+the source's stock sequence length, including trailing rests.
+If the destination uses PER PATTERN and resizing would change the shared
+length, show USE PER TRACK and keep the capture available. The destination
+keeps its sound, transpose, arp, and layering.
 
-In GEN,
-replace the copied track's sequenced trigs and locks with the captured rhythm
-and notes. Disable Euclidean on that destination track so the captured
-rhythm plays as written. The original pattern and its evolution stay available.
+Prove SEQ first. Stage the source sequence and overlay the captured pitches
+before stock transpose, arp, and layering. Preserve timing, conditions,
+locks, and retrigs. A trig that stayed silent keeps its original pitch.
+Inherited pitches follow the destination's stock sequence-paste behavior.
 
-Verify the whole capture against the stock step and note format before
-writing. One stock location may receive multiple generated times or pitches,
-especially after Euclidean remapping. For Euclidean sources, verify
-that the captured timing and lock association can map to the destination
-before offering confirmation. Show the first unrepresentable step and leave
-the destination empty if the conversion cannot preserve it.
+Then add FILL and GEN. FILL writes representable generated hits alongside
+the programmed trigs. GEN replaces the destination rhythm and disables its
+Euclidean processing. Verify the whole capture against the stock step and
+note format, including source timing, lock capacity, and conflicting pitches
+mapped to the same source step. Show the first unrepresentable step before
+writing any data.
 
-Turn the generative mode OFF on the committed destination track. Give the
-other tracks their copied modes. Cancel or a failed write leaves the source
-and destination in their previous state.
+Replace the sequence, resize the track, and set the destination GEN SEQ mode
+to OFF as one undoable edit. Undo restores the prior notes, locks, length,
+and mode. Cancellation or a failed write leaves the source and destination
+intact. [Stock paste verification](genseq-verification.md#sequence-paste-reference)
 
 ## Project persistence
 

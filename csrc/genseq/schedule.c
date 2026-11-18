@@ -55,7 +55,7 @@ static uint32_t make_hit(unsigned track, const uint8_t *copy, const uint8_t *kit
     uintptr_t address = (uintptr_t)scratch;
     if (!address) {
         uint16_t status = gseq_interrupt_mask();
-        if (has_reserve(RECORD_FREE, 104) && has_reserve(BUCKET_FREE, 16))
+        if (has_reserve(RECORD_FREE, 104))
             address = ALLOCATE();
         gseq_interrupt_restore(status);
         if (!address) {
@@ -143,12 +143,6 @@ void gseq_enqueue(uint8_t *record, uint32_t time)
      * both insertion orders while holding the same mask as stock. */
     bool generated = !WORD(record, 28);
     uint16_t status = gseq_interrupt_mask();
-    if (generated && !has_reserve(BUCKET_FREE, 16)) {
-        ++gseq_pool_drops;
-        FREE(record);
-        gseq_interrupt_restore(status);
-        return;
-    }
     uint8_t *bucket = QUEUE;
     if (bucket && WORD(bucket, 0))
         bucket = (uint8_t *)WORD(bucket, 16);
@@ -170,6 +164,12 @@ void gseq_enqueue(uint8_t *record, uint32_t time)
                 ++gseq_collision_drops;
             }
         }
+    } else if (generated && !has_reserve(BUCKET_FREE, 16)) {
+        /* Stock allocates a bucket only when this deadline is new. */
+        ++gseq_pool_drops;
+        FREE(record);
+        gseq_interrupt_restore(status);
+        return;
     }
     gseq_stock_enqueue(record, time);
     gseq_interrupt_restore(status);

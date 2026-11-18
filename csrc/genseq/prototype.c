@@ -344,6 +344,91 @@ static void publish(unsigned pattern, unsigned track, const struct gseq_track *c
     gseq_interrupt_restore(status);
 }
 
+#ifdef GSEQ_PERSISTENCE_PROBE
+/* The full-project serializer writes the saved kit grid when bit 1 is set.
+ * The 129th kit is outside the pattern grid and carries no GEN SEQ data. */
+#define SAVED_KIT_OFFSET 0xae0200u
+enum { PERSISTENCE_REVISION = 1, SAVE_KITS = 2 };
+static const void *settings_project;
+
+extern uint8_t gseq_stock_save_project(uint8_t *, const void *, uint32_t, uint32_t, void *);
+extern uint8_t gseq_stock_load_project(void *, const uint8_t *, void *);
+
+uint8_t gseq_save_project(uint8_t *image, const void *project, uint32_t options,
+                          uint32_t flags, void *progress)
+{
+    uint8_t ok = gseq_stock_save_project(image, project, options, flags, progress);
+    if (!ok || !(flags & SAVE_KITS) || project != settings_project)
+        return ok;
+
+    uint8_t *kit = image + SAVED_KIT_OFFSET;
+    for (unsigned pattern = 0; pattern < GSEQ_PATTERNS; ++pattern, kit += GSEQ_KIT_BYTES) {
+        struct gseq_track snapshot[GSEQ_TRACKS];
+        uint16_t status = gseq_interrupt_mask();
+        COPY(snapshot, settings[pattern], sizeof snapshot);
+        gseq_interrupt_restore(status);
+        bool has_settings = false;
+        for (unsigned track = 0; track < GSEQ_TRACKS; ++track) {
+            if (snapshot[track].melody_seed)
+                has_settings = true;
+            else
+                gseq_default_track(&snapshot[track]);
+        }
+        if (has_settings)
+            gseq_save(kit, snapshot, PERSISTENCE_REVISION);
+    }
+    return ok;
+}
+
+uint8_t gseq_load_project(void *project, const uint8_t *image, void *progress)
+{
+    uint8_t ok = gseq_stock_load_project(project, image, progress);
+    if (!ok)
+        return ok;
+
+    gseq_reset();
+    settings_project = project;
+    const uint8_t *kit = image + SAVED_KIT_OFFSET;
+    for (unsigned pattern = 0; pattern < GSEQ_PATTERNS; ++pattern, kit += GSEQ_KIT_BYTES) {
+        struct gseq_track snapshot[GSEQ_TRACKS];
+        if (!gseq_load(kit, snapshot, PERSISTENCE_REVISION))
+            continue;
+        for (unsigned track = 0; track < GSEQ_TRACKS; ++track)
+            if (snapshot[track].melody_seed)
+                publish(pattern, track, &snapshot[track], true, true, TRIG_MODE);
+    }
+    return ok;
+}
+#endif
+
+#ifdef GSEQ_PERFORMANCE_PROBE
+/* Called by the emulator on the UI thread before transport starts. */
+void gseq_probe_workload(const uint8_t *bytes, unsigned length)
+{
+    unsigned pattern = pattern_index(PATTERN_COPY);
+    if (length != 2 || pattern >= GSEQ_PATTERNS ||
+        bytes[0] > MODE_GEN || !bytes[1] || bytes[1] > GSEQ_TRACKS)
+        return;
+
+    for (unsigned track = 0; track < bytes[1]; ++track) {
+        struct gseq_track cfg;
+        init(&cfg, pattern, track);
+        int8_t *c = cfg.control;
+        c[TRIG_MODE] = bytes[0];
+        c[PAT] = 31;
+        c[LEN] = 4;
+        c[MELODY_MUT] = 99;
+        c[REGEN] = 99;
+        c[LOW] = 0;
+        c[HIGH] = 127;
+        c[MOVE] = 75;
+        c[PITCH_BIAS] = 50;
+        c[SCALE] = CHROMATIC;
+        publish(pattern, track, &cfg, true, true, TRIG_MODE);
+    }
+}
+#endif
+
 static void run_action(void *view)
 {
     unsigned pattern, track;

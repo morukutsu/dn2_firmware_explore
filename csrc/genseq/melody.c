@@ -241,41 +241,58 @@ static int stability(unsigned degree, uint16_t degrees)
     return -32;
 }
 
-static unsigned weight(const int8_t *c, struct gseq_pitch_map map,
-                       unsigned note, unsigned previous)
+struct pitch_basis {
+    uint16_t weight[128];
+    int8_t stable[128];
+};
+
+static void pitch_basis(struct pitch_basis *basis, const int8_t *c, struct gseq_pitch_map map)
 {
-    int span = c[HIGH] - c[LOW];
-    int position = span ? 254 * ((int)note - c[LOW]) / span - 127 : 0;
-    unsigned result = factor(c[PITCH_BIAS], position);
+    int width = c[HIGH] - c[LOW];
+    unsigned pc = degree(map, c[LOW]);
     bool tonal = map.degrees != 0xfffu && (c[TONIC] || c[RESOLVE]);
-    int stable = tonal ? stability(degree(map, note), map.degrees) : 0;
-    if (tonal)
-        result = result * factor(c[TONIC], stable) >> 7;
-    if (previous < NO_NOTE) {
-        int distance = abs_int((int)note - previous);
-        int movement = (distance < 24 ? distance : 24) * 10 - 120;
-        result = result * factor(c[MOVE], movement) >> 7;
-        if (!distance)
-            result = result * factor(c[REPEAT] - 25, 127) >> 7;
-        if (tonal && stable > 0 && distance <= 6 &&
-            stability(degree(map, previous), map.degrees) < 0)
-            result = result * factor(c[RESOLVE], 127 - 16 * distance) >> 7;
+    for (int i = 0; i <= width; ++i) {
+        unsigned weight = 0;
+        int stable = 0;
+        if (map.degrees & (1u << pc)) {
+            int position = width ? 254 * i / width - 127 : 0;
+            weight = factor(c[PITCH_BIAS], position);
+            if (tonal) {
+                stable = stability(pc, map.degrees);
+                weight = weight * factor(c[TONIC], stable) >> 7;
+            }
+        }
+        basis->weight[i] = weight;
+        basis->stable[i] = stable;
+        if (++pc == 12)
+            pc = 0;
     }
-    return result ? result : 1;
 }
 
-static unsigned pitch_weights(unsigned cumulative[128], const struct gseq_track *cfg,
+static unsigned pitch_weights(unsigned cumulative[128], const struct pitch_basis *basis,
+                             const struct gseq_track *cfg,
                              struct gseq_pitch_map map, unsigned previous)
 {
     const int8_t *c = cfg->control;
     unsigned low = c[LOW], span = c[HIGH] - low + 1, total = 0;
-    unsigned pc = degree(map, low);
+    bool has_previous = previous < NO_NOTE;
+    bool resolve = has_previous && map.degrees != 0xfffu && c[RESOLVE]
+                   && stability(degree(map, previous), map.degrees) < 0;
     for (unsigned i = 0; i < span; ++i) {
-        if (map.degrees & (1u << pc))
-            total += weight(c, map, low + i, previous);
+        unsigned weight = basis->weight[i];
+        if (weight) {
+            if (has_previous) {
+                int distance = abs_int((int)(low + i) - (int)previous);
+                int movement = (distance < 24 ? distance : 24) * 10 - 120;
+                weight = weight * factor(c[MOVE], movement) >> 7;
+                if (!distance)
+                    weight = weight * factor(c[REPEAT] - 25, 127) >> 7;
+                if (resolve && basis->stable[i] > 0 && distance <= 6)
+                    weight = weight * factor(c[RESOLVE], 127 - 16 * distance) >> 7;
+            }
+            total += weight ? weight : 1;
+        }
         cumulative[i] = total;
-        if (++pc == 12)
-            pc = 0;
     }
     return total;
 }
@@ -332,8 +349,10 @@ unsigned gseq_pitch_pick(const struct gseq_track *cfg, struct gseq_pitch_map map
 {
     if (!gseq_pitch_weighted(cfg, map))
         return uniform_pitch(cfg, map, latent);
+    struct pitch_basis basis;
+    pitch_basis(&basis, cfg->control, map);
     unsigned cumulative[128];
-    unsigned total = pitch_weights(cumulative, cfg, map, previous);
+    unsigned total = pitch_weights(cumulative, &basis, cfg, map, previous);
     if (!total)
         return NO_NOTE;
     unsigned target = ((uint32_t)latent * (total & 65535u) >> 16) + (uint32_t)latent * (total >> 16);
@@ -354,9 +373,11 @@ void gseq_pitch_prepare(struct gseq_pitch_table *table, const struct gseq_track 
     unsigned span = cfg->control[HIGH] - cfg->control[LOW] + 1;
     table->has_context = context_weights(cfg, map);
     unsigned first = table->has_context ? 0 : NO_NOTE;
+    struct pitch_basis basis;
+    pitch_basis(&basis, cfg->control, map);
     unsigned cumulative[128];
     for (unsigned previous = first; previous <= NO_NOTE; ++previous) {
-        unsigned total = pitch_weights(cumulative, cfg, map, previous);
+        unsigned total = pitch_weights(cumulative, &basis, cfg, map, previous);
         if (!total)
             return;
         /* Store the inclusive endpoint. Zero-weight leading notes get the
