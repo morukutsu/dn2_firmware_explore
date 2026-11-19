@@ -237,6 +237,11 @@ bool gseq_phrase_next_event(struct gseq_phrase *phrase, const struct gseq_track 
     if (phrase->has_last && c[HOLD] && roll(&phrase->hold_rng, c[HOLD]))
         return false;
 
+    /* A locked finite EVT phrase repeats its realized melody as well as its
+     * latent values. Give each phrase pass the same initial pitch context. */
+    if (c[ADV] == ADV_EVENT && !phrase->reads && !c[MELODY_MUT] && !c[HOLD] && !c[REGEN])
+        phrase->previous = NO_NOTE;
+
     unsigned slot = phrase->cursor;
     bool mutated = enter_slot(phrase, cfg, slot);
     *latent = phrase->last;

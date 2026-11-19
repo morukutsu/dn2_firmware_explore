@@ -29,7 +29,7 @@ THUNK, CONFIG = 0x46f1f000, 0x46f1e000
 PATTERN_BYTES, TRACK_BYTES = 122478, 1701
 CHUNK = 200_000_000
 COUNTERS = ("gseq_pitch_misses", "gseq_regen_misses", "gseq_pool_drops", "gseq_collision_drops")
-CASES = ("event-gen", "event-fill", "anchor-short", "changes")
+CASES = ("event-gen", "event-fill", "anchor-short", "locked-gen", "changes")
 
 
 def default_config(image, symbols):
@@ -51,9 +51,12 @@ def configure(default, symbols, case, pattern=0):
         cfg[0] = 2 if case == "event-fill" else 3
         if case == "changes":
             cfg[0] = 1 + track % 3
-        cfg[2] = 31
-        cfg[6] = 64 if case == "anchor-short" else 4
-        cfg[9:11] = bytes((100, 100))  # MUT and REGEN
+        locked = case == "locked-gen"
+        cfg[2] = 21 if locked else 31
+        cfg[6] = 6 if locked else 4
+        if case == "anchor-short":
+            cfg[6] = 64
+        cfg[9:11] = bytes((0, 0) if locked else (100, 100))  # MUT and REGEN
         cfg[19] = 35  # Chromatic, exercising all 128 weighted pitch rows.
         cfg[20:24] = bytes((0, 127, 50, 75))  # full pitch range, BIAS, MOVE
         cfg[27] = int(case == "anchor-short" or case == "changes" and track % 2)

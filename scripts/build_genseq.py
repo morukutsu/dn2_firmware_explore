@@ -20,7 +20,7 @@ from dnfw.patch import area, cbuild
 from build_scale_degrees import scales
 
 STOCK = ROOT / "elektron_binaries/Digitone_II_OS1.11.syx"
-VERSION = "0.4.10-dev"
+VERSION = "0.4.11-dev"
 CODE = 0x46F20000
 SOURCES = [ROOT / "csrc/genseq" / name for name in
            ("prototype.c", "ui.c", "melody.c", "rhythm.c", "schedule.c", "format.c", "hooks.S")]

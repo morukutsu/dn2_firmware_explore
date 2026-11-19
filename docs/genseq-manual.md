@@ -1,6 +1,6 @@
 # GEN SEQ
 
-User guide for GEN SEQ 0.4.10-dev on Digitone II OS 1.11.
+User guide for GEN SEQ 0.4.11-dev on Digitone II OS 1.11.
 
 GEN SEQ makes melodies on synth tracks. Use SEQ to keep the rhythm you programmed, FILL to add notes in its gaps, or GEN to generate the rhythm as well. Each track has its own settings for each pattern.
 
@@ -110,6 +110,8 @@ The center shows the legal pitch range and the latest generated note. Hold **[FU
 
 The graph connects the last 16 generated notes. The previous generated note sets the context for MOVE and REPEAT.
 TONIC and RESOLVE apply to named scales. The first generated note has no previous-note context.
+
+With a finite EVT phrase and MUT, HOLD and REGEN at zero, MELODY context restarts at each phrase boundary. The first loop and later loops play the same melody. Infinite phrases and phrases with mutation, hold or regeneration keep their context across phrase boundaries. ANC follows the stock track clock and uses the previous realized note for each onset.
 
 ## Try three sequences
 

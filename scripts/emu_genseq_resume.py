@@ -33,14 +33,18 @@ def reference(codec, track, mode):
     codec.gseq_phrase_next.restype = ct.c_uint16
     codec.gseq_pitch_pick.argtypes = [ct.POINTER(Track), PitchMap, ct.c_uint, ct.c_uint16]
     result, previous = [], 128
-    for _ in range(16):
+    length = cfg.control[6]
+    locked = length and cfg.control[27] == 0 and not any(cfg.control[i] for i in (7, 9, 10))
+    for event in range(16):
+        if locked and event % length == 0:
+            previous = 128
         latent = codec.gseq_phrase_next(phrase, ct.byref(cfg))
         previous = codec.gseq_pitch_pick(ct.byref(cfg), PitchMap(0xfff, 0), previous, latent)
         result.append(previous)
     return result
 
 
-def fixture(bank, out, phase=0):
+def load_codec(out):
     library = out / "codec.so"
     subprocess.run(["cc", "-std=c11", "-shared", "-fPIC",
                     *(str(ROOT / "csrc/genseq" / name) for name in ("format.c", "rhythm.c", "melody.c")),
@@ -49,11 +53,19 @@ def fixture(bank, out, phase=0):
     tracks_type, kit_type = Track * 16, ct.c_uint8 * KIT_SIZE
     codec.gseq_save.argtypes = [kit_type, tracks_type, ct.c_uint8]
     codec.gseq_save.restype = ct.c_bool
+    return codec
+
+
+def fixture(bank, out, phase=0, pattern=9, generator=2, length=4, weighted=True,
+            pitch_bias=50, move=75, repeat=25):
+    codec = load_codec(out)
+    tracks_type, kit_type = Track * 16, ct.c_uint8 * KIT_SIZE
     default = Track.in_dll(codec, "gseq_defaults")
     tracks = tracks_type(*[default] * 16)
     c = tracks[0].control
-    c[0], c[2], c[6], c[11], c[19] = 3, 8, 4, 2, 35  # GEN, PAT 9, LEN 4, SHAPE, chromatic
-    c[22], c[23] = 50, 75  # Exercise the weighted-pitch preparation path.
+    c[0], c[2], c[6], c[11], c[19] = 3, pattern - 1, length, generator, 35
+    if weighted:
+        c[22], c[23], c[24] = pitch_bias, move, repeat
     c[8] = phase
     tracks[0].rhythm, tracks[0].melody = 17, 257
     raw = bytearray(bank.read_bytes())
@@ -68,10 +80,7 @@ def fixture(bank, out, phase=0):
     return path, expected
 
 
-def run(image, bank, expected, out):
-    symbols = json.loads(image.with_name("symbols.json").read_text())
-    cfg = symbols["settings"]
-    # No mode edit before the first PLAY after reset.
+def silence_other_tracks():
     # Silence the stock fixture's other tracks without rebuilding track 1's
     # cold-boot record, which is the subject of this regression.
     thunk = bytearray()
@@ -80,7 +89,14 @@ def run(image, bank, expected, out):
         silence += [f"poke:{PLAYBACK + 1701 * track:#x}:{bytes(256).hex()}"]
         thunk.extend(struct.pack(">HIHIH", 0x2f3c, track, 0x4eb9, 0x400d8f16, 0x588f))
     thunk.extend(b"\x4e\x75")
-    steps = [*BOOT, *silence, f"poke:0x46f1ff00:{thunk.hex()}", "send:00",
+    return [*silence, f"poke:0x46f1ff00:{thunk.hex()}", "send:00"]
+
+
+def run(image, bank, expected, out):
+    symbols = json.loads(image.with_name("symbols.json").read_text())
+    cfg = symbols["settings"]
+    # No mode edit before the first PLAY after reset.
+    steps = [*BOOT, *silence_other_tracks(),
              f"peek:{cfg:#x}:32", *play("cold", "540M"),
              *play("restart", "540M"), "tap:1", *SHORTCUT, *SHORTCUT,
              *turns(1, -1), *turns(1, 1),

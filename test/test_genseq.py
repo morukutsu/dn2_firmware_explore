@@ -289,6 +289,39 @@ def test_phrase_rejects_late_draft_at_wrap(codec):
     assert codec.gseq_phrase_next(phrase, track) == first and phrase.bank == 1
 
 
+@pytest.mark.parametrize("length,phase", [(1, 0), (6, 0), (6, 2), (64, 17)])
+def test_locked_event_phrase_repeats_realized_pitches(codec, length, phase):
+    track = Track.from_buffer_copy(Track.in_dll(codec, "gseq_defaults"))
+    track.control[0], track.control[2], track.control[6] = 3, 21, length
+    track.control[8], track.control[11], track.control[19] = phase, 1, 35
+    track.control[22:25] = [-50, -100, 75]
+    track.rhythm, track.melody = 17, 257
+    phrase = Phrase()
+    codec.gseq_phrase_build(phrase, track)
+    slots = bytes(phrase.slots)
+    loops = []
+    for _ in range(3):
+        pitches = []
+        for _ in range(length):
+            latent = codec.gseq_phrase_next(phrase, track)
+            phrase.previous = codec.gseq_pitch_pick(track, PitchMap(0xfff, 0), phrase.previous, latent)
+            pitches.append(phrase.previous)
+        loops.append(pitches)
+    assert loops[0] == loops[1] == loops[2]
+    assert bytes(phrase.slots) == slots
+
+
+@pytest.mark.parametrize("field,value", [(6, 0), (7, 1), (9, 1), (10, 1), (27, 1)])
+def test_unlocked_phrase_retains_previous_pitch_context(codec, field, value):
+    track = Track.from_buffer_copy(Track.in_dll(codec, "gseq_defaults"))
+    track.control[field] = value
+    phrase = Phrase()
+    codec.gseq_phrase_build(phrase, track)
+    phrase.previous = 61
+    codec.gseq_phrase_next(phrase, track)
+    assert phrase.previous == 61
+
+
 def test_pitch_map_filters_notes_and_applies_context_weights(codec):
     track = fixture_tracks(codec)[0]
     track.control[20:23] = [60, 71, 0]

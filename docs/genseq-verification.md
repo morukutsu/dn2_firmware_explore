@@ -3,6 +3,58 @@
 The hardware-tested 0.4.1 baseline is commit `45268db`. The experiments below
 use Digitone II OS 1.11 and run outside that checkpoint.
 
+## GRV 22 first-pass investigation
+
+In 0.4.11-dev, finite EVT phrases with MUT, HOLD and REGEN at zero reset
+their previous-note context at each phrase boundary. This makes later
+passes repeat the melody heard on the first pass. The change keeps the
+stored latent values and seeds. Infinite and evolving phrases retain
+continuous context. ANC keeps its per-onset previous-note behavior.
+
+The owner confirmed LEN 6 with MUT, HOLD and REGEN at zero. GROOVE 22
+contains six hits in its 16-step cell. A regression fixture with LEN 6,
+PITCH BIAS −50%, MOVE −100% and REPEAT 75% starts at 59 on its first loop
+and 58 on later loops in 0.4.10-dev. The rebuilt image repeats
+59, 58, 58, 58, 57, 57 from its first loop. PLAY, STOP/PLAY and cold boot
+all match. The neutral and other weighted fixtures also pass.
+
+The host tests cover phrase lengths 1, 6 and 64 and nonzero PHASE. They
+also check that INF, HOLD, MUT, REGEN and ANC retain continuous context.
+All 75 focused tests pass. The saved-kit format keeps its existing layout.
+Reports for the current image are in `out/genseq/0.4.11-combined/firstnote/`.
+
+The four existing stress workloads and an added locked GEN workload pass
+on the combined image. The locked case uses GROOVE 22, LEN 6 and 16 tracks
+with a 128-note weighted pitch range. Together the runs cover 514.0 seconds
+of emulated playback and 225,454 voice onsets. They report zero firmware
+faults, pitch misses, regeneration misses, pool drops or collision drops.
+STOP releases every voice and the editor responds afterward.
+
+```sh
+.venv/bin/python scripts/emu_genseq_firstnote.py \
+  out/genseq/0.4.11-combined/genseq-waverider-lfopreview-0.4.11-dev-persist_DN2_1.11.syx \
+  out/genseq/0.4.8-combined/project/working-bank.bin \
+  --pattern 22 --length 6 --out out/genseq/0.4.11-combined/firstnote-repeat
+```
+
+### Earlier control runs
+
+The 0.4.10-dev checkpoint is commit `36a927d`. The first-note harness
+tests GEN, GROOVE 22, EVT and WALK from a fresh editor setup and saved
+state. With LEN 8 and neutral MELODY settings, the pitches match the
+evaluator on PLAY and STOP/PLAY.
+
+A saved fixture with MOVE 50%, REPEAT 75%, and MUT, HOLD and REGEN at zero
+reproduces a first-note-only difference between phrase loops. Its first
+loop starts at 61. The following loop starts at 60. The remaining seven
+notes match. STOP/PLAY repeats the same first-pass behavior, with zero
+pitch misses. The first onset uses the no-previous-note pitch row.
+Later loop starts use the last realized pitch of the preceding loop.
+
+This reproduces context-dependent pitch selection. Reports from the
+0.4.10-dev image are in
+`out/genseq/0.4.11-combined/firstnote-control/`.
+
 ## Rhythm mode toggles in 0.4.10-dev
 
 In 0.4.9-dev, GEN to OFF to GEN resumed the old phrase cursor and
