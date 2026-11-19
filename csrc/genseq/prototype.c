@@ -1,6 +1,9 @@
 #include "ui.h"
 #include "schedule.h"
 #include "melody.h"
+#ifdef GSEQ_PERSISTENCE_PROBE
+#include "../include/dn2_111.h"
+#endif
 
 #define PATTERN_COPY (*(const uint8_t *volatile *)0x42c5a9a0u)
 #define CUED_COPY (*(const uint8_t *volatile *)0x42c5a9a4u)
@@ -29,6 +32,9 @@ typedef int (*StockSnap)(const void *, int, int, int, int, void *);
 static uint32_t encoder_state[232 / 4];
 static unsigned encoder_pattern, encoder_track;
 static struct gseq_track settings[GSEQ_PATTERNS][GSEQ_TRACKS];
+#ifdef GSEQ_PERSISTENCE_PROBE
+static volatile unsigned settings_revision[GSEQ_PATTERNS];
+#endif
 void *gseq_editor_view;
 static enum gseq_page editor_page;
 static enum gseq_action editor_action;
@@ -348,12 +354,19 @@ static void prepare_pitch(const struct gseq_track *cfg, const uint8_t *copy,
     uint16_t status = gseq_interrupt_mask();
     const uint8_t *active = PATTERN_COPY, *cued = CUED_COPY;
     struct pitch_cache *slot = 0;
+    unsigned best = 4;
     for (unsigned i = 0; i < 3; ++i) {
         struct pitch_cache *candidate = &pitch_caches[track][i];
         if (!candidate->building && !pitch_in_use(candidate, active, track)
             && !pitch_in_use(candidate, cued, track)) {
-            slot = candidate;
-            break;
+            /* Keep the other pattern's valid table through repeated edits.
+             * A stale revision of this pattern is the next scratch slot. */
+            unsigned rank = !candidate->revision ? 0 : candidate->pattern == pattern ? 1 :
+                candidate->revision != pitch_revisions[candidate->pattern][track] ? 2 : 3;
+            if (rank < best) {
+                slot = candidate;
+                best = rank;
+            }
         }
     }
     if (slot) {
@@ -389,6 +402,18 @@ void gseq_prepare_copy(const uint8_t *copy)
         gseq_interrupt_restore(status);
         prepare_pitch(&cfg, copy, pattern, track, revision);
     }
+}
+
+extern void gseq_stock_queue_patterns(const void *, unsigned);
+
+void gseq_queue_patterns(const uint8_t *entries, unsigned count)
+{
+    /* Each stock queue descriptor starts with its playback-copy pointer.
+     * Build the next pattern's weighted tables before stock can activate it.
+     * This runs on the request path, outside note admission and drawing. */
+    if (entries && count && count <= 2048)
+        gseq_prepare_copy((const uint8_t *)WORD(entries, 0));
+    gseq_stock_queue_patterns(entries, count);
 }
 
 /* Tag accepted stock producer records without editing their pattern note.
@@ -512,15 +537,19 @@ static void publish(unsigned pattern, unsigned track, const struct gseq_track *c
     uint32_t schedule = schedules[pattern][track];
     if (field <= ACT || field == CONTROL_COUNT)
         schedule = (uint32_t)gseq_rhythm_mask(cfg) << 16 | cfg->control[TRIG_MODE];
+    bool pitch_changed = field >= ROOT && field < ADV;
+    if (field == CONTROL_COUNT)
+        for (unsigned control = ROOT; control < ADV; ++control)
+            pitch_changed |= cfg->control[control] != settings[pattern][track].control[control];
     uint32_t revision = pitch_revisions[pattern][track];
-    if (!revision || (field >= ROOT && field < ADV)) {
+    if (!revision || pitch_changed) {
         if (++next_pitch_revision == 0)
             ++next_pitch_revision;
         revision = next_pitch_revision;
     }
     const uint8_t *copy = PATTERN_COPY;
     if ((schedule & 3u) && pattern_index(copy) == pattern &&
-        (field == TRIG_MODE || (field >= ROOT && field < ADV)))
+        (field == TRIG_MODE || pitch_changed))
         prepare_pitch(cfg, copy, pattern, track, revision);
 
     /* The UI prepares a new base loop before the short publication. The
@@ -543,6 +572,10 @@ static void publish(unsigned pattern, unsigned track, const struct gseq_track *c
         gseq_phrase_restart(phrase, cfg);
         if (!reset_context)
             phrase->previous = previous;
+    } else if (field == TRIG_MODE) {
+        /* Re-enabling a rhythm mode starts the current phrase predictably.
+         * Finite slots survive the toggle, as they do on STOP/PLAY. */
+        gseq_phrase_restart(phrase, cfg);
     } else if (field == PHASE || field == ADV) {
         gseq_phrase_phase(phrase, cfg);
     }
@@ -556,12 +589,16 @@ static void publish(unsigned pattern, unsigned track, const struct gseq_track *c
         else
             --gseq_anchor_count;
     }
-    if (pattern_index(PATTERN_COPY) == pattern && (rebuild || field == ADV || field == PHASE)) {
+    bool restart_event = field == TRIG_MODE && cfg->control[ADV] == ADV_EVENT;
+    if (pattern_index(PATTERN_COPY) == pattern && (rebuild || field == ADV || field == PHASE || restart_event)) {
         anchors[track].length = 0;
         struct live_track *live = live_track(pattern, track);
         live->slot = live->flash = NO_SLOT;
     }
     COPY(&settings[pattern][track], cfg, sizeof *cfg);
+#ifdef GSEQ_PERSISTENCE_PROBE
+    ++settings_revision[pattern];
+#endif
     pitch_revisions[pattern][track] = revision;
     schedules[pattern][track] = schedule;
     gseq_interrupt_restore(status);
@@ -570,24 +607,30 @@ static void publish(unsigned pattern, unsigned track, const struct gseq_track *c
 #ifdef GSEQ_PERSISTENCE_PROBE
 /* The full-project serializer writes the saved kit grid when bit 1 is set.
  * The 129th kit is outside the pattern grid and carries no GEN SEQ data. */
-#define SAVED_KIT_OFFSET 0xae0200u
 enum { PERSISTENCE_REVISION = 1, SAVE_KITS = 2 };
-static const void *settings_project;
+static const void *volatile settings_project;
+static volatile unsigned project_epoch;
 
 extern uint8_t gseq_stock_save_project(uint8_t *, const void *, uint32_t, uint32_t, void *);
 extern uint8_t gseq_stock_load_project(void *, const uint8_t *, void *);
 
-uint8_t gseq_save_project(uint8_t *image, const void *project, uint32_t options,
-                          uint32_t flags, void *progress)
+static void bind_project(const void *project)
 {
-    uint8_t ok = gseq_stock_save_project(image, project, options, flags, progress);
-    if (!ok || !(flags & SAVE_KITS) || project != settings_project)
-        return ok;
+    uint16_t status = gseq_interrupt_mask();
+    ++project_epoch;
+    settings_project = 0;
+    gseq_interrupt_restore(status);
+    gseq_reset();
+    settings_project = project;
+}
 
-    uint8_t *kit = image + SAVED_KIT_OFFSET;
-    for (unsigned pattern = 0; pattern < GSEQ_PATTERNS; ++pattern, kit += GSEQ_KIT_BYTES) {
-        struct gseq_track snapshot[GSEQ_TRACKS];
+static void save_pattern(uint8_t *kit, unsigned pattern, unsigned epoch)
+{
+    struct gseq_track snapshot[GSEQ_TRACKS];
+    uint8_t record[GSEQ_RECORD_BYTES];
+    while (epoch == project_epoch) {
         uint16_t status = gseq_interrupt_mask();
+        unsigned revision = settings_revision[pattern];
         COPY(snapshot, settings[pattern], sizeof snapshot);
         gseq_interrupt_restore(status);
         bool has_settings = false;
@@ -597,9 +640,46 @@ uint8_t gseq_save_project(uint8_t *image, const void *project, uint32_t options,
             else
                 gseq_default_track(&snapshot[track]);
         }
-        if (has_settings)
-            gseq_save(kit, snapshot, PERSISTENCE_REVISION);
+        if (has_settings && !gseq_encode(record, snapshot, PERSISTENCE_REVISION))
+            return;
+
+        /* A queued save can race an encoder edit while encoding the CRC. */
+        status = gseq_interrupt_mask();
+        bool current = revision == settings_revision[pattern];
+        if (current && epoch == project_epoch)
+            gseq_store_record(kit, has_settings ? record : 0);
+        gseq_interrupt_restore(status);
+        if (current)
+            return;
     }
+}
+
+static void save_working_pattern(unsigned pattern)
+{
+    /* Stock owns the working image and the flash job that writes its banks. */
+    unsigned epoch = project_epoch;
+    if (settings_project && *(const volatile uint32_t *)DN2_IMAGE == 0xbeefbaceu)
+        save_pattern((uint8_t *)DN2_IMAGE + DN2_IMAGE_KITS + pattern * GSEQ_KIT_BYTES, pattern, epoch);
+}
+
+void gseq_new_project(void *project)
+{
+    ((void (*)(void *))0x400e7940u)(project);
+    bind_project(project);
+}
+
+uint8_t gseq_save_project(uint8_t *image, const void *project, uint32_t options,
+                          uint32_t flags, void *progress)
+{
+    unsigned epoch = project_epoch;
+    uint8_t ok = gseq_stock_save_project(image, project, options, flags, progress);
+    if (!ok || !(flags & SAVE_KITS) || epoch != project_epoch)
+        return ok;
+    if (image == (uint8_t *)DN2_IMAGE && !settings_project && !epoch)
+        settings_project = project;
+    if (project == settings_project)
+        for (unsigned pattern = 0; pattern < GSEQ_PATTERNS && epoch == project_epoch; ++pattern)
+            save_pattern(image + DN2_IMAGE_KITS + pattern * GSEQ_KIT_BYTES, pattern, epoch);
     return ok;
 }
 
@@ -609,9 +689,8 @@ uint8_t gseq_load_project(void *project, const uint8_t *image, void *progress)
     if (!ok)
         return ok;
 
-    gseq_reset();
-    settings_project = project;
-    const uint8_t *kit = image + SAVED_KIT_OFFSET;
+    bind_project(project);
+    const uint8_t *kit = image + DN2_IMAGE_KITS;
     for (unsigned pattern = 0; pattern < GSEQ_PATTERNS; ++pattern, kit += GSEQ_KIT_BYTES) {
         struct gseq_track snapshot[GSEQ_TRACKS];
         if (!gseq_load(kit, snapshot, PERSISTENCE_REVISION))
@@ -619,6 +698,251 @@ uint8_t gseq_load_project(void *project, const uint8_t *image, void *progress)
         for (unsigned track = 0; track < GSEQ_TRACKS; ++track)
             if (snapshot[track].melody_seed)
                 publish(pattern, track, &snapshot[track], true, true, TRIG_MODE);
+    }
+    /* Stock populated its stopped first-step records before our settings
+     * existed. Refresh them after the live project has its GEN SEQ controls. */
+    if (pattern_index(PATTERN_COPY) < GSEQ_PATTERNS && CLOCK_RUNNING != 1) {
+        gseq_prepare_copy(PATTERN_COPY);
+        ((void (*)(unsigned))0x400d8f16u)(UINT32_MAX);
+    }
+    return ok;
+}
+#endif
+
+static void publish_edit(unsigned pattern, unsigned track, const struct gseq_track *cfg,
+                         bool rebuild, bool reset_context, unsigned field)
+{
+    uint32_t before = schedules[pattern][track];
+    publish(pattern, track, cfg, rebuild, reset_context, field);
+    /* Stock prepares the first step before PLAY. A rhythm edit while stopped
+     * must replace the old scratch record just like an edit to a stock trig. */
+    uint32_t after = schedules[pattern][track];
+    uint32_t changed = before ^ after;
+    if (((changed & 3u) || ((after & 3u) >= MODE_FILL && changed)) && CLOCK_RUNNING != 1 &&
+        pattern_index(PATTERN_COPY) == pattern)
+        ((void (*)(unsigned))0x400d8f16u)(track);
+#ifdef GSEQ_PERSISTENCE_PROBE
+    save_working_pattern(pattern);
+#endif
+}
+
+#ifdef GSEQ_PERSISTENCE_PROBE
+/* Stock owns the clipboard, undo eligibility and destination selection. These
+ * snapshots travel with successful stock operations. Nothing in the audio
+ * path observes or updates the clipboard. */
+enum { LIVE_PATTERN_BYTES = 122478, LIVE_PATTERN_AT = 28, TEMP_SLOT = 128 };
+static struct gseq_track track_clipboard, track_undo;
+static bool track_clipboard_ready;
+static unsigned track_undo_epoch, track_undo_id, track_undo_kind;
+static struct gseq_track pattern_clipboard[GSEQ_TRACKS];
+static struct gseq_track pattern_undo[GSEQ_PATTERNS][GSEQ_TRACKS];
+static bool pattern_clipboard_ready;
+static unsigned pattern_undo_epoch, pattern_undo_kind;
+static uint8_t pattern_undo_list[GSEQ_PATTERNS];
+static unsigned pattern_undo_size;
+static uint32_t stored_kit[GSEQ_KIT_BYTES / 4];
+
+struct pattern_list { const unsigned *first, *end; };
+
+static const void *object_data(const void *view)
+{
+    const void *table = *(const void *const *)view;
+    /* These stock vtable slots return the address in d0. */
+    return (const void *)((uintptr_t (*)(const void *))WORD(table, 40))(view);
+}
+
+static unsigned track_id(const void *view)
+{
+    if (!settings_project)
+        return GSEQ_PATTERNS * GSEQ_TRACKS;
+    uintptr_t offset = (uintptr_t)object_data(view) - (uintptr_t)settings_project - LIVE_PATTERN_AT;
+    unsigned pattern = offset / LIVE_PATTERN_BYTES;
+    unsigned within = offset % LIVE_PATTERN_BYTES;
+    if (pattern >= GSEQ_PATTERNS || within >= GSEQ_TRACK_BYTES * GSEQ_TRACKS || within % GSEQ_TRACK_BYTES)
+        return GSEQ_PATTERNS * GSEQ_TRACKS;
+    return pattern * GSEQ_TRACKS + within / GSEQ_TRACK_BYTES;
+}
+
+static void replace_track(unsigned pattern, unsigned track, const struct gseq_track *cfg)
+{
+    const struct gseq_track *value = cfg->melody_seed ? cfg : &gseq_defaults;
+    publish_edit(pattern, track, value, true, true, CONTROL_COUNT);
+    uint16_t status = gseq_interrupt_mask();
+    if (pattern_index(PATTERN_COPY) == pattern) {
+        struct live_track *history = live_track(pattern, track);
+        history->count = history->head = 0;
+    }
+    gseq_interrupt_restore(status);
+}
+
+uint8_t gseq_track_copy(const void *view)
+{
+    uint8_t ok = ((uint8_t (*)(const void *))0x4005361eu)(view);
+    unsigned id = track_id(view);
+    if (ok) {
+        track_clipboard_ready = id < GSEQ_PATTERNS * GSEQ_TRACKS;
+        if (track_clipboard_ready)
+            COPY(&track_clipboard, &settings[id / GSEQ_TRACKS][id % GSEQ_TRACKS], sizeof track_clipboard);
+    }
+    return ok;
+}
+
+static void edit_track(const void *view, unsigned kind, const struct gseq_track *cfg)
+{
+    unsigned id = track_id(view);
+    track_undo_kind = 0;
+    if (id < GSEQ_PATTERNS * GSEQ_TRACKS) {
+        unsigned pattern = id / GSEQ_TRACKS, track = id % GSEQ_TRACKS;
+        COPY(&track_undo, &settings[pattern][track], sizeof track_undo);
+        track_undo_id = id;
+        track_undo_epoch = project_epoch;
+        track_undo_kind = kind;
+        replace_track(pattern, track, cfg);
+    }
+}
+
+uint8_t gseq_track_paste(const void *view, unsigned undo)
+{
+    uint8_t ok = ((uint8_t (*)(const void *, unsigned))0x40053728u)(view, undo);
+    if (ok)
+        edit_track(view, (uint8_t)undo ? 2 : 0, track_clipboard_ready ? &track_clipboard : &gseq_defaults);
+    return ok;
+}
+
+uint8_t gseq_track_clear(const void *view, unsigned undo)
+{
+    uint8_t ok = ((uint8_t (*)(const void *, unsigned))0x40053474u)(view, undo);
+    if (ok)
+        edit_track(view, (uint8_t)undo ? 1 : 0, &gseq_defaults);
+    return ok;
+}
+
+uint8_t gseq_track_undo(const void *view, unsigned kind)
+{
+    uint8_t ok = ((uint8_t (*)(const void *, unsigned))0x40052824u)(view, kind);
+    if (ok && kind == track_undo_kind && track_undo_epoch == project_epoch && track_id(view) == track_undo_id) {
+        replace_track(track_undo_id / GSEQ_TRACKS, track_undo_id % GSEQ_TRACKS, &track_undo);
+        track_undo_kind = 0;
+    }
+    return ok;
+}
+
+extern uint8_t gseq_stock_pattern_copy(const void *, unsigned);
+extern uint8_t gseq_stock_pattern_paste(const void *, const struct pattern_list *, unsigned);
+extern uint8_t gseq_stock_pattern_clear(const void *, const struct pattern_list *, unsigned, unsigned, unsigned);
+extern uint8_t gseq_stock_pattern_undo(const void *, const struct pattern_list *, unsigned);
+extern uint8_t gseq_stock_reload_pattern(const void *, unsigned, unsigned);
+
+uint8_t gseq_pattern_copy(const void *app, unsigned pattern)
+{
+    uint8_t ok = gseq_stock_pattern_copy(app, pattern);
+    if (ok) {
+        pattern_clipboard_ready = settings_project && object_data(app) == settings_project && pattern < GSEQ_PATTERNS;
+        if (pattern_clipboard_ready)
+            COPY(pattern_clipboard, settings[pattern], sizeof pattern_clipboard);
+    }
+    return ok;
+}
+
+static unsigned pattern_list_size(const struct pattern_list *list)
+{
+    uintptr_t n = (uintptr_t)list->end - (uintptr_t)list->first;
+    return n <= GSEQ_PATTERNS * sizeof(unsigned) && !(n % sizeof(unsigned)) ? n / sizeof(unsigned) : 0;
+}
+
+static void replace_pattern(unsigned pattern, const struct gseq_track *tracks)
+{
+    for (unsigned track = 0; track < GSEQ_TRACKS; ++track) {
+        const struct gseq_track *cfg = tracks && tracks[track].melody_seed ? &tracks[track] : &gseq_defaults;
+        publish(pattern, track, cfg, true, true, CONTROL_COUNT);
+    }
+    if (pattern_index(PATTERN_COPY) == pattern) {
+        ++gseq_history_epoch;
+        if (CLOCK_RUNNING != 1)
+            ((void (*)(unsigned))0x400d8f16u)(UINT32_MAX);
+    }
+    save_working_pattern(pattern);
+}
+
+static void edit_patterns(const void *app, const struct pattern_list *list, unsigned kind,
+                          const struct gseq_track *tracks)
+{
+    if (!settings_project || object_data(app) != settings_project)
+        return;
+    pattern_undo_epoch = project_epoch;
+    pattern_undo_kind = kind;
+    pattern_undo_size = pattern_list_size(list);
+    for (unsigned i = 0; i < pattern_undo_size; ++i) {
+        unsigned pattern = list->first[i];
+        pattern_undo_list[i] = pattern < GSEQ_PATTERNS ? pattern : UINT8_MAX;
+        if (pattern < GSEQ_PATTERNS)
+            COPY(pattern_undo[pattern], settings[pattern], sizeof settings[pattern]);
+    }
+    for (unsigned i = 0; i < pattern_undo_size; ++i)
+        if (pattern_undo_list[i] < GSEQ_PATTERNS)
+            replace_pattern(pattern_undo_list[i], tracks);
+}
+
+uint8_t gseq_pattern_paste(const void *app, const struct pattern_list *list, unsigned undo)
+{
+    uint8_t ok = gseq_stock_pattern_paste(app, list, undo);
+    if (ok)
+        edit_patterns(app, list, (uint8_t)undo ? 2 : 0, pattern_clipboard_ready ? pattern_clipboard : 0);
+    return ok;
+}
+
+uint8_t gseq_pattern_clear(const void *app, const struct pattern_list *list,
+                           unsigned sequence, unsigned kit, unsigned undo)
+{
+    uint8_t ok = gseq_stock_pattern_clear(app, list, sequence, kit, undo);
+    if (ok && (uint8_t)sequence)
+        edit_patterns(app, list, (uint8_t)undo ? 1 : 0, 0);
+    else if (ok && (uint8_t)undo)
+        pattern_undo_kind = 0; /* A kit-only clear replaces the stock undo entry. */
+    return ok;
+}
+
+uint8_t gseq_pattern_undo(const void *app, const struct pattern_list *list, unsigned kind)
+{
+    uint8_t ok = gseq_stock_pattern_undo(app, list, kind);
+    if (!ok || kind != pattern_undo_kind || pattern_undo_epoch != project_epoch ||
+        object_data(app) != settings_project || pattern_list_size(list) != pattern_undo_size)
+        return ok;
+    for (unsigned i = 0; i < pattern_undo_size; ++i)
+        if (pattern_undo_list[i] >= GSEQ_PATTERNS || list->first[i] != pattern_undo_list[i])
+            return ok;
+    for (unsigned i = 0; i < pattern_undo_size; ++i) {
+        unsigned pattern = pattern_undo_list[i];
+        replace_pattern(pattern, pattern_undo[pattern]);
+    }
+    pattern_undo_kind = 0;
+    return ok;
+}
+
+uint8_t gseq_save_pattern_kit(uint8_t *saved, const void *kit, unsigned flags)
+{
+    uint8_t ok = ((uint8_t (*)(uint8_t *, const void *, unsigned))0x400dde44u)(saved, kit, flags);
+    uintptr_t offset = (uintptr_t)kit - (uintptr_t)settings_project - DN2_PROJECT_KITS;
+    unsigned pattern = offset / DN2_KIT_BYTES;
+    if (ok && settings_project && pattern < GSEQ_PATTERNS && !(offset % DN2_KIT_BYTES))
+        save_pattern(saved, pattern, project_epoch);
+    return ok;
+}
+
+uint8_t gseq_reload_pattern(const void *app, unsigned temporary, unsigned pattern)
+{
+    uint8_t ok = gseq_stock_reload_pattern(app, temporary, pattern);
+    if (!ok || !settings_project || object_data(app) != settings_project || pattern >= GSEQ_PATTERNS)
+        return ok;
+    int slot = (uint8_t)temporary ? TEMP_SLOT : ((int (*)(const void *))0x4003eb8au)(app);
+    if (slot < 0 || slot > TEMP_SLOT)
+        return ok;
+    void *storage = (void *)((uintptr_t (*)(void))0x4018ddc8u)();
+    unsigned sector = (DN2_IMAGE_KITS + pattern * GSEQ_KIT_BYTES) / 512;
+    if (((int (*)(void *, void *, unsigned, unsigned, unsigned))0x4012d82eu)
+            (storage, stored_kit, slot, sector, GSEQ_KIT_BYTES) == 0 && stored_kit[0] == 0xbeefbaceu) {
+        struct gseq_track tracks[GSEQ_TRACKS];
+        replace_pattern(pattern, gseq_load((const uint8_t *)stored_kit, tracks, PERSISTENCE_REVISION) ? tracks : 0);
     }
     return ok;
 }
@@ -673,13 +997,13 @@ static void run_action(void *view)
         bool enabled = next.control[BANK] == BANK_RANDOM && next.control[TRIG_MODE] >= MODE_FILL;
         if (enabled) {
             next.rhythm_seed = next.rhythm_seed == UINT16_MAX ? 1 : next.rhythm_seed + 1;
-            publish(pattern, track, &next, false, false, PAT);
+            publish_edit(pattern, track, &next, false, false, PAT);
         }
         gseq_action_message(view, editor_action, enabled);
     } else {
         if (!fresh)
             next.melody_seed = next.melody_seed == UINT16_MAX ? 1 : next.melody_seed + 1;
-        publish(pattern, track, &next, true, true, CONTROL_COUNT);
+        publish_edit(pattern, track, &next, true, true, CONTROL_COUNT);
         gseq_action_message(view, editor_action, true);
     }
 }
@@ -882,7 +1206,7 @@ unsigned gseq_encoder(void *secondary, void *event)
         if (c[LEN] && c[PHASE] >= c[LEN])
             c[PHASE] = c[LEN] - 1;
         bool rebuild = first_edit || needs_length || field == LEN || (field >= GEN_MODE && field <= MOMENT);
-        publish(pattern, track, &next, rebuild, first_edit, field);
+        publish_edit(pattern, track, &next, rebuild, first_edit || field == GEN_MODE, field);
     }
     gseq_value_message(view, editor_page, encoder, &next);
     edited = encoder;

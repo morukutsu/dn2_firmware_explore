@@ -20,11 +20,12 @@ from dnfw.patch import area, cbuild
 from build_scale_degrees import scales
 
 STOCK = ROOT / "elektron_binaries/Digitone_II_OS1.11.syx"
-VERSION = "0.4.6-dev"
+VERSION = "0.4.10-dev"
 CODE = 0x46F20000
 SOURCES = [ROOT / "csrc/genseq" / name for name in
            ("prototype.c", "ui.c", "melody.c", "rhythm.c", "schedule.c", "format.c", "hooks.S")]
 HOOKS = (
+    (0x400D93F0, "4fefffec48d70c1c", "gseq_queue_patterns"),
     (0x400D8654, "4fefffcc48d77cfc", "gseq_produce"),
     (0x40138B5C, "4fefffec48d70c1c", "gseq_enqueue"),
     (0x400D8AE2, "274e0054200b", "gseq_note_hook"),
@@ -39,6 +40,14 @@ HOOKS = (
     (0x401E1D80, "4006de74", "gseq_draw"),
     (0x401E1D9C, "400647b4", "gseq_tick"),
     (0x401E1E70, "4006df7a", "gseq_encoder"),
+)
+PERSISTENCE_CALLS = (
+    (0x40069C90, "4eb94005361e", "gseq_track_copy"),
+    (0x4006A4D4, "4eb940053728", "gseq_track_paste"),
+    (0x4006A5B8, "4eb940053474", "gseq_track_clear"),
+    (0x4006A47C, "4eb940052824", "gseq_track_undo"),
+    (0x4006A560, "4eb940052824", "gseq_track_undo"),
+    (0x4003FF94, "4eb9400dde44", "gseq_save_pattern_kit"),
 )
 
 
@@ -61,7 +70,14 @@ def build(stock: Path, out: Path, *, collision_probe: bool = False,
     hooks = HOOKS
     defines = {}
     if persistence_probe:
-        hooks += ((0x400E1494, "4fefffd448d77cfc", "gseq_save_project"),)
+        hooks += ((0x400E1494, "4fefffd448d77cfc", "gseq_save_project"),
+                  (0x40042968, "4eb9400e7940", "gseq_create_hook"),
+                  (0x40043B92, "4e56ffd848d71c1c", "gseq_pattern_copy"),
+                  (0x400464A0, "4e56ffc841eefff0", "gseq_pattern_clear"),
+                  (0x400466EE, "4e56ffc041eeffe8", "gseq_pattern_paste"),
+                  (0x40040702, "4e56ffcc41eefff8", "gseq_pattern_undo"),
+                  (0x400443BC, "4e56ffe048d70c3c", "gseq_reload_pattern"),
+                  *PERSISTENCE_CALLS)
         defines["GSEQ_PERSISTENCE_PROBE"] = "1"
     entries = [hook[2] for hook in hooks]
     if collision_probe:
@@ -120,7 +136,8 @@ def build(stock: Path, out: Path, *, collision_probe: bool = False,
         if image[offset:offset + len(old)] != old:
             raise ValueError(f"{label} at {address:#010x} has unexpected stock bytes")
         pointer = struct.pack(">I", linked[label])
-        new = pointer if len(old) == 4 else b"\x4e\xf9" + pointer + b"\x4e\x71" * ((len(old) - 6) // 2)
+        opcode = b"\x4e\xb9" if (address, expected, label) in PERSISTENCE_CALLS else b"\x4e\xf9"
+        new = pointer if len(old) == 4 else opcode + pointer + b"\x4e\x71" * ((len(old) - 6) // 2)
         image[offset:offset + len(old)] = new
 
     chunk = area.CodeChunk(CODE, linked.image, linked.bss).pack()
@@ -151,7 +168,7 @@ if __name__ == "__main__":
     parser.add_argument("--performance-probe", action="store_true",
                         help="include emulator-only workload setup")
     parser.add_argument("--persistence-probe", action="store_true",
-                        help="enable experimental project conversion hooks for emulator tests")
+                        help="enable experimental project reads, saves, and working-image writes")
     parser.add_argument("--waverider-preview-base", type=Path,
                         help="OS 1.11 image built with dnfw mods apply --mod waverider --mod lfopreview")
     parser.add_argument("--lfo4-base", type=Path,

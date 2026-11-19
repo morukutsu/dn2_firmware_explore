@@ -1,8 +1,12 @@
 # GEN SEQ
 
-User guide for GEN SEQ 0.4.6-dev on Digitone II OS 1.11.
+User guide for GEN SEQ 0.4.10-dev on Digitone II OS 1.11.
 
-GEN SEQ makes melodies on synth tracks. Use SEQ to keep the rhythm you programmed, FILL to add notes in its gaps, or GEN to generate the rhythm as well. Each track has its own settings for each pattern during the session. This version keeps those settings in RAM. Project save and reload do not store them, and Commit to Pattern is unavailable.
+GEN SEQ makes melodies on synth tracks. Use SEQ to keep the rhythm you programmed, FILL to add notes in its gaps, or GEN to generate the rhythm as well. Each track has its own settings for each pattern.
+
+Builds marked **-persist** store the controls and rhythm and melody seeds in the project. Use **[FUNC] + [YES]** to save the temporary pattern. Use **[FUNC] + [NO]** to reload it. Saving and loading a project preserves the settings for all 128 patterns. Sequence copy, paste, clear and undo include GEN SEQ settings. Loading a sound preset keeps the track's GEN SEQ settings.
+
+Builds without **-persist** keep settings for the session. Commit to Pattern is unavailable.
 
 ## Open GEN SEQ
 
@@ -34,6 +38,8 @@ The sequencer makes four decisions for each note. **TRIG** decides which steps p
 Filled marks show programmed trigs. A center mark shows a pitch override. Hollow marks show generated hits. The underline follows the stock playhead.
 
 BANK through ACT affect FILL and GEN. VAR shows a dash with MOD set to NONE. In FILL, a programmed note or lock trig reserves its step even when a condition prevents it from firing. SEQ works with stock Euclidean timing. Eligible single-note trigs receive generated pitches. Programmed chords and unsupported note forms keep their stock pitches.
+
+Changing MODE restarts the current phrase at PHASE in EVT and clears the previous-note context. In ANC, the track clock selects the current region. Mode changes retain the phrase values and seeds. MUT and REGEN can change the phrase during subsequent playback.
 
 ## 2. PHRASE
 

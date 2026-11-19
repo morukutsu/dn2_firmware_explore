@@ -216,15 +216,14 @@ def run(image, stock, out):
     assert len(expected) >= 8 and set(expected) == {(60,)}, expected
     assert measured["off"] == expected
 
-    # The ramp spans the edited range in eight admitted notes. Stock can
-    # already have queued the very first note before the editor armed SEQ.
+    # The ramp spans the edited range in eight admitted notes, starting on step 1.
     ramp = [(49 + ((65535 * index // 7) * 23 >> 16),) for index in range(8)]
-    assert measured["generated"] == expected[:1] + ramp
+    assert measured["generated"] == ramp + ramp[:1]
     assert measured["reseeded"] == ramp + ramp[:1]
     assert measured["restored"] == expected
     phased_ramp = [(49 + ((65535 * index // 8) * 23 >> 16),) for index in (*range(1, 9), 0)]
     assert measured["phase_restarted"] == phased_ramp
-    assert measured["phase_armed"][1:] == phased_ramp[:-1]
+    assert measured["phase_armed"] == phased_ramp
     stock_scales = scales(load(stock.read_bytes()).container.find(3).unpack())
     assert len(set(measured["weighted_scale"])) > 1
     assert all(len(notes) == 1 and notes[0] % 12 in stock_scales[34]

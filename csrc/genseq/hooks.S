@@ -77,6 +77,12 @@ gseq_probe_clock_done:
 1:  move.l  0x4058e554,%d0
     jmp     0x40027b6e
 
+    .global gseq_stock_queue_patterns
+gseq_stock_queue_patterns:
+    lea     -20(%sp),%sp
+    movem.l %d2-%d4/%a2-%a3,(%sp)
+    jmp     0x400d93f8
+
     .global gseq_prepare_hook
 gseq_prepare_hook:
     move.l  #0x1de6a,%d0
@@ -109,6 +115,41 @@ gseq_stock_save_project:
     lea     -44(%sp),%sp
     movem.l %d2-%d7/%a2-%fp,(%sp)
     jmp     0x400e149c
+
+    .global gseq_create_hook
+gseq_create_hook:
+    jsr     gseq_new_project
+    jmp     0x4004296e
+
+    .global gseq_stock_pattern_copy
+gseq_stock_pattern_copy:
+    link.w  %fp,#-40
+    movem.l %d2-%d4/%a2-%a4,(%sp)
+    jmp     0x40043b9a
+
+    .global gseq_stock_pattern_clear
+gseq_stock_pattern_clear:
+    link.w  %fp,#-56
+    lea     -16(%fp),%a0
+    jmp     0x400464a8
+
+    .global gseq_stock_pattern_paste
+gseq_stock_pattern_paste:
+    link.w  %fp,#-64
+    lea     -24(%fp),%a0
+    jmp     0x400466f6
+
+    .global gseq_stock_pattern_undo
+gseq_stock_pattern_undo:
+    link.w  %fp,#-52
+    lea     -8(%fp),%a0
+    jmp     0x4004070a
+
+    .global gseq_stock_reload_pattern
+gseq_stock_reload_pattern:
+    link.w  %fp,#-32
+    movem.l %d2-%d5/%a2-%a3,(%sp)
+    jmp     0x400443c4
 #else
     lea     -36(%sp),%sp
     movem.l %d2-%d5/%a2-%fp,(%sp)

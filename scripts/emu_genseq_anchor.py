@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 from build_genseq import ROOT, STOCK
 from emu_genseq import DOWN, ENTER_NOTES, PAGES, SHORTCUT, UP, editor_turns, frames, notes
 from emu_genseq_perf import AUDIO, intervals, peak
-from emu_genseq_rhythm import BOOT, PLAYBACK
+from emu_genseq_rhythm import BOOT, PLAYBACK, turns
 from emu_seqplay import panel_drive
 from emulib import playback
 
@@ -21,7 +21,7 @@ ANCHOR_BYTES = 28
 HISTORY_BYTES = 62
 
 
-def run(image, stock, out, silent=False):
+def run(image, stock, out, silent=False, mode_toggle=False):
     symbols = json.loads(image.with_name("symbols.json").read_text())
     cfg, anchors, live = (symbols[name] for name in ("settings", "anchors", "live_tracks"))
     requests = symbols["gseq_animation_requests"]
@@ -37,6 +37,8 @@ def run(image, stock, out, silent=False):
               f"peek:{cfg:#x}:32", "frame:run", "tap:20",
               "wait:40M", f"peek:{requests:#x}:4", "peek:0x466758b0:4"]
     for i in range(14):
+        if mode_toggle and i == 6:
+            panel += [*UP, *turns(1, -3), "wait:80M", *turns(1, 3), *DOWN]
         panel += ["wait:20M", f"frame:p{i:02}", f"peek:{anchors:#x}:{ANCHOR_BYTES}",
                   f"peek:{live:#x}:{HISTORY_BYTES}"]
     panel += [f"peek:{requests:#x}:4", "peek:0x466758b0:4",
@@ -70,7 +72,11 @@ def run(image, stock, out, silent=False):
         region = phase * 5 // cycle
         assert clock[25] == 5 and clock[26] == history[11] == region
         timeline.append(region)
-    assert set(timeline) == set(range(5)), timeline
+    # Page navigation and mode edits advance real playback between samples.
+    # Every sampled region must match stock above. The uninterrupted cases
+    # additionally sample all five regions.
+    if not mode_toggle:
+        assert set(timeline) == set(range(5)), timeline
     count0, tick0 = (int.from_bytes(row) for row in read[1:3])
     count1, tick1 = (int.from_bytes(row) for row in read[31:33])
     assert 0 < count1 - count0 <= ((tick1 - tick0) & 0xfff) // 5 + 1
@@ -84,8 +90,7 @@ def run(image, stock, out, silent=False):
     if silent:
         assert not pitches
     else:
-        # Stock can preflight the first step before the mode takes effect.
-        assert pitches == [60, 54, 60, 66, 48, 54]
+        assert pitches == [48, 54, 60, 66, 48, 54]
         assert all(abs(b.icount - a.icount - 4 * STEP) < 300_000
                    for a, b in zip(onsets, onsets[1:]))
     captures = frames(result)
@@ -95,7 +100,7 @@ def run(image, stock, out, silent=False):
         with Image.open(path) as frame:
             ImageOps.invert(frame.convert("L")).resize((256, 128), Image.Resampling.NEAREST).save(
                 path.with_suffix(".png"))
-    if silent:
+    if silent and not mode_toggle:
         # Same controls, pitch history and transport. Only the center redraw changes.
         middle = []
         for name in picks:
@@ -207,10 +212,13 @@ if __name__ == "__main__":
     parser.add_argument("--mixed-fill", action="store_true", help="include the two-track timing probe")
     parser.add_argument("--microtimed", action="store_true", help="include the panel microtiming regression")
     parser.add_argument("--density", action="store_true", help="compare mutation with and without GEN hits")
+    parser.add_argument("--mode-toggle", action="store_true", help="toggle silent ANC from GEN to OFF and back during playback")
     args = parser.parse_args()
     with ThreadPoolExecutor(max_workers=2) as pool:
         jobs = [pool.submit(run, args.image, args.stock, args.out / name, silent)
                 for name, silent in (("seq", False), ("silent-gen", True))]
+        if args.mode_toggle:
+            jobs.append(pool.submit(run, args.image, args.stock, args.out / "toggle-gen", True, True))
         if args.mixed_fill:
             jobs.append(pool.submit(run_mixed_fill, args.image, args.stock, args.out / "mixed-fill"))
         if args.microtimed:

@@ -38,7 +38,11 @@ static inline void gseq_default_track(struct gseq_track *track)
     track->melody_seed = 0;
 }
 
-/* These operate on a saved kit image. The project reader and writer do not call them yet. */
+/* Encode before taking the working-image publication lock. NULL clears an owned record. */
+bool gseq_encode(uint8_t record[GSEQ_RECORD_BYTES],
+                 const struct gseq_track tracks[GSEQ_TRACKS], uint8_t revision);
+void gseq_store_record(uint8_t kit[GSEQ_KIT_BYTES], const uint8_t *record);
+
 bool gseq_save(uint8_t kit[GSEQ_KIT_BYTES],
                const struct gseq_track tracks[GSEQ_TRACKS], uint8_t revision);
 bool gseq_load(const uint8_t kit[GSEQ_KIT_BYTES],

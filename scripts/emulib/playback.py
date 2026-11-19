@@ -28,7 +28,8 @@ def run(image: Path, steps: list[str], out: Path, *, runner: Path | None = None,
         base: Path | None = None, ssi_hz: int = 96000,
         capture: tuple[str, ...] = (), watch: tuple[int, ...] = (),
         count: tuple[int, ...] = (), timeout: int = 1500,
-        guest_call: tuple[int, int] | None = None) -> dict:
+        card_extents: tuple[tuple[int, Path], ...] = (),
+        guest_call: tuple[int, int] | None = None, guest_call_args: int | None = None) -> dict:
     """Keep the panel script and raw report even if the emulator faults."""
     out = out.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -44,9 +45,12 @@ def run(image: Path, steps: list[str], out: Path, *, runner: Path | None = None,
         cmd += ["--watch", ",".join(map(hex, watch))]
     if count:
         cmd += ["--count", ",".join(map(hex, count))]
+    for sector, path in card_extents:
+        cmd += ["--card-extent", f"{sector:#x}:{path.resolve()}"]
     if guest_call:
         at, target = guest_call
-        cmd += ["--call-at", hex(at), "--call-fn", hex(target), "--call-buf", "stack"]
+        cmd += ["--call-at", hex(at), "--call-fn", hex(target)]
+        cmd += ["--call-buf", "stack"] if guest_call_args is None else ["--call-args", str(guest_call_args)]
     done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     raw = out / "runner.json"
     raw.write_text(done.stdout)

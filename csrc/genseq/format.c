@@ -88,10 +88,9 @@ static bool unpack_track(const uint8_t *in, struct gseq_track *track, bool ancho
     return valid(track);
 }
 
-bool gseq_save(uint8_t kit[GSEQ_KIT_BYTES],
-               const struct gseq_track tracks[GSEQ_TRACKS], uint8_t revision)
+bool gseq_encode(uint8_t record[GSEQ_RECORD_BYTES],
+                 const struct gseq_track tracks[GSEQ_TRACKS], uint8_t revision)
 {
-    uint8_t record[GSEQ_RECORD_BYTES];
     for (unsigned i = 0; i < GSEQ_RECORD_BYTES; ++i)
         record[i] = 0;
     record[0] = 'G';
@@ -113,11 +112,27 @@ bool gseq_save(uint8_t kit[GSEQ_KIT_BYTES],
     uint32_t crc = payload_crc(record);
     for (unsigned i = 0; i < 4; ++i)
         record[8 + i] = crc >> (24 - 8 * i);
+    return true;
+}
 
+void gseq_store_record(uint8_t kit[GSEQ_KIT_BYTES], const uint8_t *record)
+{
+    uint8_t *magic = kit + ranges[0].offset;
+    if (!record && (magic[0] != 'G' || magic[1] != 'S' || magic[2] != 'E' || magic[3] != 'Q'))
+        return;
     unsigned pos = 0;
     for (unsigned i = 0; i < sizeof ranges / sizeof ranges[0]; ++i)
         for (unsigned j = 0; j < ranges[i].size; ++j)
-            kit[ranges[i].offset + j] = record[pos++];
+            kit[ranges[i].offset + j] = record ? record[pos++] : 0;
+}
+
+bool gseq_save(uint8_t kit[GSEQ_KIT_BYTES],
+               const struct gseq_track tracks[GSEQ_TRACKS], uint8_t revision)
+{
+    uint8_t record[GSEQ_RECORD_BYTES];
+    if (!gseq_encode(record, tracks, revision))
+        return false;
+    gseq_store_record(kit, record);
     return true;
 }
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import emu_seqplay as sp
 from build_genseq import ROOT, STOCK
 from dnfw import seqframes
-from emu_genseq import SHORTCUT, editor_turns, frames, notes
+from emu_genseq import DOWN, SHORTCUT, UP, editor_turns, frames, notes
 from emulib import playback
 
 PLAYBACK = 0x4121898C  # Fresh A01 playback copy. Verify before using the probe.
@@ -55,7 +55,8 @@ def run(image, stock, out, symbols):
     baseline = playback.run(stock, [*BOOT, *programmed, *play("stock")], out / "stock", **opts)
     checks = [f"peek:{symbols[name]:#x}:4" for name in ("gseq_pool_drops", "gseq_collision_drops")]
     panel = [*BOOT, *programmed, *SHORTCUT, *SHORTCUT, *turns(1, 2), *turns(3, 2),
-             *play("fill"), f"poke:{PLAYBACK:#x}:7801", *play("fill_lock"),
+             *play("fill"), f"poke:{PLAYBACK:#x}:7801",
+             *turns(3, 1), *turns(3, -1), *play("fill_lock"),
              *turns(1, 1), *play("gen"),
              "press:23", "tap:26", "release:23", "wait:100M", *play("other_pattern", "550M"),
              *SHORTCUT, *SHORTCUT, *turns(1, 3), *turns(3, 2), *play("empty_gen"), *checks]
@@ -70,13 +71,12 @@ def run(image, stock, out, symbols):
     (out / "steps.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))
     assert report["stock"] == [8, 24, 40]
-    assert report["fill"] == [8, 16, 24, 32, 40, 48]
-    assert [step for step in report["fill_lock"] if step] == report["stock"]
-    # Stock can already have a preflight record for step 1 when the mode changes.
-    expected = [4, 16, 20, 32, 36, 48, 52]
-    assert [step for step in report["gen"] if step] == expected
+    assert report["fill"] == [0, 8, 16, 24, 32, 40, 48]
+    assert report["fill_lock"] == report["stock"]
+    expected = [0, 4, 16, 20, 32, 36, 48, 52]
+    assert report["gen"] == expected
     assert report["other_pattern"] == []
-    assert [step for step in report["empty_gen"] if step] == expected
+    assert report["empty_gen"] == expected
     assert report["pool_drops"] == report["collision_drops"] == 0
 
 
@@ -138,6 +138,26 @@ def run_mute(image, stock, out):
     print("GEN follows stock quick mute and resumes on unmute.")
 
 
+def run_startup(image, stock, out):
+    """Arm a fixed GEN phrase after stock has cached its own pitch for step 1."""
+    setup = [*BOOT, "tap:1", "wait:30M", "tap:19", "tap:25", *sp.note_steps(1, 12),
+             "tap:19", "wait:40M", *SHORTCUT, *SHORTCUT, *turns(1, 3), *turns(3, 8),
+             *DOWN, *(["edit:1:-4", "wait:15M"] * 4), *DOWN, *turns(1, 1)]
+    panel = [*setup, *play("first", "540M"), *play("restart", "540M"), *UP, *UP,
+             "press:17", "wait:10M", "edit:6:-4", "wait:10M", "edit:6:-4",
+             "wait:10M", "release:17", *play("silent", "320M"),
+             *turns(1, -3), *play("off", "320M")]
+    result = playback.run(image, editor_turns(image, panel), out, base=stock,
+                          runner=sp.panel_drive(), watch=(playback.FAULT_DN2_111,),
+                          capture=(f"{playback.EXCHANGE_DN2_111:#x}:1:48",))
+    pitches = {label: [int(event.notes[0]) for event in notes(result, label)[0]]
+               for label in ("first", "restart", "silent", "off")}
+    (out / "pitches.json").write_text(json.dumps(pitches, indent=2) + "\n")
+    assert pitches["first"] == pitches["restart"] == [48, 56, 64, 72] * 2 + [48], pitches
+    assert not pitches["silent"] and pitches["off"] == [73, 73], pitches
+    print(json.dumps(pitches))
+
+
 def run_collision(image, stock, out, symbols):
     """Inject real pool records with equal deadlines and check the DSP events."""
     steps = [*BOOT, "tap:19", "tap:29", "tap:19", "wait:40M",
@@ -167,11 +187,14 @@ if __name__ == "__main__":
     cases = parser.add_mutually_exclusive_group()
     cases.add_argument("--clock", action="store_true")
     cases.add_argument("--mute", action="store_true")
+    cases.add_argument("--startup", action="store_true")
     args = parser.parse_args()
     if args.clock:
         run_clock(args.image, args.stock, args.out.resolve())
     elif args.mute:
         run_mute(args.image, args.stock, args.out.resolve())
+    elif args.startup:
+        run_startup(args.image, args.stock, args.out.resolve())
     else:
         symbols = json.loads(args.image.with_name("symbols.json").read_text())
         run(args.image, args.stock, args.out.resolve(), symbols)
