@@ -28,6 +28,7 @@ def run(image: Path, steps: list[str], out: Path, *, runner: Path | None = None,
         base: Path | None = None, ssi_hz: int = 96000,
         capture: tuple[str, ...] = (), watch: tuple[int, ...] = (),
         count: tuple[int, ...] = (), timeout: int = 1500,
+        regs_at: tuple[int, ...] = (),
         card_extents: tuple[tuple[int, Path], ...] = (),
         guest_call: tuple[int, int] | None = None, guest_call_args: int | None = None) -> dict:
     """Keep the panel script and raw report even if the emulator faults."""
@@ -45,6 +46,8 @@ def run(image: Path, steps: list[str], out: Path, *, runner: Path | None = None,
         cmd += ["--watch", ",".join(map(hex, watch))]
     if count:
         cmd += ["--count", ",".join(map(hex, count))]
+    if regs_at:
+        cmd += ["--regs-at", ",".join(map(hex, regs_at))]
     for sector, path in card_extents:
         cmd += ["--card-extent", f"{sector:#x}:{path.resolve()}"]
     if guest_call:

@@ -150,6 +150,30 @@ gseq_stock_reload_pattern:
     link.w  %fp,#-32
     movem.l %d2-%d5/%a2-%a3,(%sp)
     jmp     0x400443c4
+
+    .global gseq_stock_preset_copy
+gseq_stock_preset_copy:
+    lea     -32(%sp),%sp
+    movem.l %d2-%d4/%a2,(%sp)
+    jmp     0x4004d738
+
+    .global gseq_stock_preset_paste
+gseq_stock_preset_paste:
+    link.w  %fp,#-40
+    movem.l %d2-%d3/%a2-%a3,(%sp)
+    jmp     0x4004d7d0
+
+    .global gseq_stock_preset_clear
+gseq_stock_preset_clear:
+    link.w  %fp,#-44
+    movem.l %d2-%d4/%a2-%a4,(%sp)
+    jmp     0x4004d5f8
+
+    .global gseq_stock_preset_undo
+gseq_stock_preset_undo:
+    link.w  %fp,#-28
+    movem.l %d2/%a2-%a3,(%sp)
+    jmp     0x4004d01e
 #else
     lea     -36(%sp),%sp
     movem.l %d2-%d5/%a2-%fp,(%sp)

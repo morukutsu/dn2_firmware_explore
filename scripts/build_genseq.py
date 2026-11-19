@@ -20,7 +20,7 @@ from dnfw.patch import area, cbuild
 from build_scale_degrees import scales
 
 STOCK = ROOT / "elektron_binaries/Digitone_II_OS1.11.syx"
-VERSION = "0.4.11-dev"
+VERSION = "0.4.12-dev"
 CODE = 0x46F20000
 SOURCES = [ROOT / "csrc/genseq" / name for name in
            ("prototype.c", "ui.c", "melody.c", "rhythm.c", "schedule.c", "format.c", "hooks.S")]
@@ -77,6 +77,10 @@ def build(stock: Path, out: Path, *, collision_probe: bool = False,
                   (0x400466EE, "4e56ffc041eeffe8", "gseq_pattern_paste"),
                   (0x40040702, "4e56ffcc41eefff8", "gseq_pattern_undo"),
                   (0x400443BC, "4e56ffe048d70c3c", "gseq_reload_pattern"),
+                  (0x4004D730, "4fefffe048d7041c", "gseq_preset_copy"),
+                  (0x4004D7C8, "4e56ffd848d70c0c", "gseq_preset_paste"),
+                  (0x4004D5F0, "4e56ffd448d71c1c", "gseq_preset_clear"),
+                  (0x4004D016, "4e56ffe448d70c04", "gseq_preset_undo"),
                   *PERSISTENCE_CALLS)
         defines["GSEQ_PERSISTENCE_PROBE"] = "1"
     entries = [hook[2] for hook in hooks]

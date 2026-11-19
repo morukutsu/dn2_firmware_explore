@@ -8,9 +8,10 @@ import json
 from pathlib import Path
 import struct
 
+from dnfw import seqframes
 from build_genseq import ROOT, STOCK
 from emu_degreetranspose import RELOAD, SAVE
-from emu_genseq import SHORTCUT, editor_turns
+from emu_genseq import SHORTCUT, editor_turns, frames
 from emu_genseq_paste import TRACK_BYTES, modified, select
 from emu_genseq_persist import (CONFIG_BYTES, IMAGE, KIT_BASE, KIT_SIZE, LFO4_OFFSETS,
                                PATTERN_AT, PATTERN_BYTES, PROJECT, SERIALISE, SPANS,
@@ -81,13 +82,35 @@ def run_panel(image, bank, out, settings, case, lfo4=True):
         return snapshot(label, pattern, settings)
 
     edit_pat = [*SHORTCUT, *SHORTCUT, 'edit:3:10', 'wait:40M', 'tap:12', 'tap:1', 'wait:40M']
-    target = 1 if case == 'pattern' else 0
-    clipboard = [*modified(21), *snap('paste', target), *modified(21), *snap('undo_paste', target),
-                 *modified(20), *snap('clear', target), *modified(20), *snap('undo_clear', target)]
-    if case == 'track':
+    preset_track = case in ('track-preset', 'track-preset-pattern', 'track-preset-playing', 'track-preset-empty')
+    playing = case == 'track-preset-playing'
+    empty = case == 'track-preset-empty'
+    source_track = 2 if empty else 0
+    target = 1 if case in ('pattern', 'track-preset-pattern') else 0
+    def gesture(key):
+        if preset_track:
+            return ['press:16', 'wait:40M', f'tap:{key}', 'release:16', 'wait:80M']
+        return modified(key)
+
+    clipboard = [*gesture(21), *snap('paste', target), *gesture(21), *snap('undo_paste', target),
+                 *gesture(20), *snap('clear', target), *gesture(20), *snap('undo_clear', target)]
+    if case == 'track' or preset_track:
         setup = [*select(2), *SHORTCUT, *SHORTCUT, 'edit:1:10', 'wait:40M', 'edit:3:30',
                  'wait:40M', 'tap:12', 'tap:1', 'wait:50M', 'tap:19', 'tap:31', 'tap:19', 'wait:30M',
-                 *select(1), 'tap:19', *modified(19), *select(2), *snap('before')]
+                 *select(1), *(['tap:19'] if case == 'track' else []),
+                 *(['tap:20', 'wait:180M'] if playing else [])]
+        if empty:
+            setup += select(3)
+        setup += [*snap('source'), *gesture(19)]
+        if target:
+            setup += ['press:23', 'wait:10M', 'tap:26', 'release:23', 'wait:100M']
+        setup += select(2)
+        if target:
+            # Configure the occupied destination through its own editor, as
+            # in the same-pattern case, before taking the undo baseline.
+            setup += [*SHORTCUT, *SHORTCUT, 'edit:3:10', 'wait:40M',
+                      'tap:12', 'tap:1', 'wait:40M']
+        setup += snap('before', target)
         panel = [*setup, *clipboard]
     elif case == 'pattern':
         panel = [*snap('source'), *modified(19), 'press:23', 'wait:10M', 'tap:26',
@@ -102,17 +125,33 @@ def run_panel(image, bank, out, settings, case, lfo4=True):
                  'tap:12', 'wait:40M', 'tap:1', 'wait:40M', *RELOAD, 'wait:180M', *snap('reload')]
     else:
         panel = [*snap('before'), *LOAD_PRESET, *snap('after')]
-    seen = snapshots(drive(image, bank, out, [*BOOT, *panel])['results'])
-    if case in ('track', 'pattern'):
+    if playing:
+        panel += ['wait:180M', 'tap:21', 'wait:120M']
+    result = drive(image, bank, out, [*BOOT, *panel],
+                   capture=(f'{playback.EXCHANGE_DN2_111:#x}:1:48',) if playing else ())
+    if playing:
+        markers = frames(result)
+        assert any(markers['source']['icount'] < event.icount < markers['undo_clear']['icount']
+                   for event in seqframes.note_ons(seqframes.events(result['captures']))), 'no playback events'
+    seen = snapshots(result['results'])
+    if case in ('track', 'pattern') or preset_track:
         before, paste, undo_paste, cleared, undo_clear = (seen[name] for name in
             ('before', 'paste', 'undo_paste', 'clear', 'undo_clear'))
-        if case == 'track':
+        if case == 'track' or preset_track:
+            source = seen['source']
             assert before.config(0) != before.config(1) and not clear(before.config(1))
             assert trigs(before.trigs[0]) != trigs(before.trigs[1])
-            assert trigs(paste.trigs[1]) == trigs(before.trigs[0]) and not trigs(cleared.trigs[1])
-            assert all(p.sound(1) == before.sound(1) for p in seen.values())
+            if case == 'track':
+                assert trigs(paste.trigs[1]) == trigs(before.trigs[0]) and not trigs(cleared.trigs[1])
+                assert all(p.sound(1) == before.sound(1) for p in seen.values())
+            else:
+                assert all(p.trigs == before.trigs for p in (paste, undo_paste, cleared, undo_clear))
+                assert paste.sound(1) == source.sound(source_track)
+                assert undo_paste.sound(1) == undo_clear.sound(1) == before.sound(1)
+                if empty:
+                    assert clear(source.config(source_track))
             configs = [p.config(1) for p in (before, paste, cleared)]
-            want = before.config(0)
+            want = source.config(source_track)
         else:
             source = seen['source']
             assert source.configs != before.configs
@@ -124,7 +163,8 @@ def run_panel(image, bank, out, settings, case, lfo4=True):
             configs = [p.configs for p in (before, paste, cleared)]
             want = source.configs
         assert undo_paste.trigs == undo_clear.trigs == before.trigs
-        paste_ok = configs[1] == want if case == 'track' else paste.configured() == source.configured()
+        paste_ok = (clear(configs[1]) if empty else configs[1] == want) if case != 'pattern' else (
+            paste.configured() == source.configured())
         clear_ok = clear(configs[2])
         return {'stock_paste_clear_undo': True, 'genseq_paste': paste_ok, 'genseq_clear': clear_ok,
                 'genseq_undo': paste_ok and clear_ok and
@@ -196,7 +236,8 @@ def main():
     parser.add_argument('image', type=Path)
     parser.add_argument('bank', type=Path, help='working-bank.bin fixture made by emu_genseq_persist.py --cold')
     parser.add_argument('--out', type=Path, default=ROOT / 'out/genseq/persistence-ops')
-    cases = ('track', 'pattern', 'temporary', 'preset', 'flush')
+    cases = ('track', 'track-preset', 'track-preset-pattern', 'track-preset-playing', 'track-preset-empty',
+             'pattern', 'temporary', 'preset', 'flush')
     parser.add_argument('--case', choices=cases)
     parser.add_argument('--without-lfo4', action='store_true', help='test the combined build without LFO4')
     args = parser.parse_args()

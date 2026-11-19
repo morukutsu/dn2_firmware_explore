@@ -421,3 +421,22 @@ def test_host_wins_equal_deadline_in_both_insertion_orders(prototype, tmp_path):
     image = build(stock, tmp_path / "probe", collision_probe=True)
     symbols = json.loads(image.with_name("symbols.json").read_text())
     run_collision(image, stock, tmp_path / "captures", symbols)
+
+
+@pytest.mark.slow
+def test_track_preset_clipboard(prototype, tmp_path):
+    import json
+    import os
+    from build_genseq import build
+    from emu_genseq_persist_ops import run_panel
+
+    fixture_bank = os.environ.get("DNFW_GENSEQ_WORKING_BANK")
+    if not fixture_bank:
+        pytest.skip("set DNFW_GENSEQ_WORKING_BANK to the saved-project working-bank.bin fixture")
+    bank = Path(fixture_bank).resolve(strict=True)
+    _, stock = prototype
+    image = build(stock, tmp_path / "persist", persistence_probe=True)
+    settings = json.loads(image.with_name("symbols.json").read_text())["settings"]
+    for case in ("track", "track-preset", "track-preset-pattern", "track-preset-playing", "track-preset-empty"):
+        report = run_panel(image, bank, tmp_path / case, settings, case, lfo4=False)
+        assert all(report.values()), (case, report)

@@ -1,12 +1,18 @@
 # GEN SEQ
 
-User guide for GEN SEQ 0.4.11-dev on Digitone II OS 1.11.
+User guide for GEN SEQ 0.4.12-dev on Digitone II OS 1.11.
 
 GEN SEQ makes melodies on synth tracks. Use SEQ to keep the rhythm you programmed, FILL to add notes in its gaps, or GEN to generate the rhythm as well. Each track has its own settings for each pattern.
 
 Builds marked **-persist** store the controls and rhythm and melody seeds in the project. Use **[FUNC] + [YES]** to save the temporary pattern. Use **[FUNC] + [NO]** to reload it. Saving and loading a project preserves the settings for all 128 patterns. Sequence copy, paste, clear and undo include GEN SEQ settings. Loading a sound preset keeps the track's GEN SEQ settings.
 
 Builds without **-persist** keep settings for the session. Commit to Pattern is unavailable.
+
+### Copy a track's settings
+
+Hold **[TRACK]** and press **[COPY]** to copy the track preset and its GEN SEQ controls and seeds. Select the destination track. Hold **[TRACK]** and press **[PASTE]**. This also works between patterns. The destination keeps its programmed trigs.
+
+Press **[TRACK] + [PASTE]** again to undo the paste. **[TRACK] + [CLEAR]** resets the preset and GEN SEQ settings. Repeat it to undo. Copying a track with no GEN SEQ settings switches the destination's GEN SEQ mode to OFF. Track-preset and sequence clipboards keep separate copies.
 
 ## Open GEN SEQ
 

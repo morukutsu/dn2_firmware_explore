@@ -731,9 +731,12 @@ static void publish_edit(unsigned pattern, unsigned track, const struct gseq_tra
  * snapshots travel with successful stock operations. Nothing in the audio
  * path observes or updates the clipboard. */
 enum { LIVE_PATTERN_BYTES = 122478, LIVE_PATTERN_AT = 28, TEMP_SLOT = 128 };
-static struct gseq_track track_clipboard, track_undo;
-static bool track_clipboard_ready;
-static unsigned track_undo_epoch, track_undo_id, track_undo_kind;
+struct track_edits {
+    struct gseq_track clipboard, undo;
+    bool ready;
+    unsigned epoch, id, kind;
+};
+static struct track_edits sequence_edits, preset_edits;
 static struct gseq_track pattern_clipboard[GSEQ_TRACKS];
 static struct gseq_track pattern_undo[GSEQ_PATTERNS][GSEQ_TRACKS];
 static bool pattern_clipboard_ready;
@@ -763,6 +766,21 @@ static unsigned track_id(const void *view)
     return pattern * GSEQ_TRACKS + within / GSEQ_TRACK_BYTES;
 }
 
+static unsigned sound_id(const void *view)
+{
+    if (!settings_project)
+        return GSEQ_PATTERNS * GSEQ_TRACKS;
+    uintptr_t offset = (uintptr_t)object_data(view) - (uintptr_t)settings_project - DN2_PROJECT_KITS;
+    unsigned pattern = offset / DN2_KIT_BYTES;
+    unsigned within = offset % DN2_KIT_BYTES;
+    if (pattern >= GSEQ_PATTERNS || within < DN2_SOUND_AT)
+        return GSEQ_PATTERNS * GSEQ_TRACKS;
+    within -= DN2_SOUND_AT;
+    if (within >= DN2_SOUND_STRIDE * GSEQ_TRACKS || within % DN2_SOUND_STRIDE)
+        return GSEQ_PATTERNS * GSEQ_TRACKS;
+    return pattern * GSEQ_TRACKS + within / DN2_SOUND_STRIDE;
+}
+
 static void replace_track(unsigned pattern, unsigned track, const struct gseq_track *cfg)
 {
     const struct gseq_track *value = cfg->melody_seed ? cfg : &gseq_defaults;
@@ -775,29 +793,40 @@ static void replace_track(unsigned pattern, unsigned track, const struct gseq_tr
     gseq_interrupt_restore(status);
 }
 
+static void copy_track(struct track_edits *edits, unsigned id)
+{
+    edits->ready = id < GSEQ_PATTERNS * GSEQ_TRACKS;
+    if (edits->ready)
+        COPY(&edits->clipboard, &settings[id / GSEQ_TRACKS][id % GSEQ_TRACKS], sizeof edits->clipboard);
+}
+
 uint8_t gseq_track_copy(const void *view)
 {
     uint8_t ok = ((uint8_t (*)(const void *))0x4005361eu)(view);
-    unsigned id = track_id(view);
-    if (ok) {
-        track_clipboard_ready = id < GSEQ_PATTERNS * GSEQ_TRACKS;
-        if (track_clipboard_ready)
-            COPY(&track_clipboard, &settings[id / GSEQ_TRACKS][id % GSEQ_TRACKS], sizeof track_clipboard);
-    }
+    if (ok)
+        copy_track(&sequence_edits, track_id(view));
     return ok;
 }
 
-static void edit_track(const void *view, unsigned kind, const struct gseq_track *cfg)
+static void edit_track(struct track_edits *edits, unsigned id, unsigned kind, const struct gseq_track *cfg)
 {
-    unsigned id = track_id(view);
-    track_undo_kind = 0;
+    edits->kind = 0;
     if (id < GSEQ_PATTERNS * GSEQ_TRACKS) {
         unsigned pattern = id / GSEQ_TRACKS, track = id % GSEQ_TRACKS;
-        COPY(&track_undo, &settings[pattern][track], sizeof track_undo);
-        track_undo_id = id;
-        track_undo_epoch = project_epoch;
-        track_undo_kind = kind;
+        COPY(&edits->undo, &settings[pattern][track], sizeof edits->undo);
+        edits->id = id;
+        edits->epoch = project_epoch;
+        edits->kind = kind;
         replace_track(pattern, track, cfg);
+    }
+}
+
+static void undo_track(struct track_edits *edits, unsigned id, unsigned kind)
+{
+    if (kind == edits->kind && edits->epoch == project_epoch && id == edits->id &&
+        id < GSEQ_PATTERNS * GSEQ_TRACKS) {
+        replace_track(id / GSEQ_TRACKS, id % GSEQ_TRACKS, &edits->undo);
+        edits->kind = 0;
     }
 }
 
@@ -805,7 +834,8 @@ uint8_t gseq_track_paste(const void *view, unsigned undo)
 {
     uint8_t ok = ((uint8_t (*)(const void *, unsigned))0x40053728u)(view, undo);
     if (ok)
-        edit_track(view, (uint8_t)undo ? 2 : 0, track_clipboard_ready ? &track_clipboard : &gseq_defaults);
+        edit_track(&sequence_edits, track_id(view), (uint8_t)undo ? 2 : 0,
+                   sequence_edits.ready ? &sequence_edits.clipboard : &gseq_defaults);
     return ok;
 }
 
@@ -813,17 +843,53 @@ uint8_t gseq_track_clear(const void *view, unsigned undo)
 {
     uint8_t ok = ((uint8_t (*)(const void *, unsigned))0x40053474u)(view, undo);
     if (ok)
-        edit_track(view, (uint8_t)undo ? 1 : 0, &gseq_defaults);
+        edit_track(&sequence_edits, track_id(view), (uint8_t)undo ? 1 : 0, &gseq_defaults);
     return ok;
 }
 
 uint8_t gseq_track_undo(const void *view, unsigned kind)
 {
     uint8_t ok = ((uint8_t (*)(const void *, unsigned))0x40052824u)(view, kind);
-    if (ok && kind == track_undo_kind && track_undo_epoch == project_epoch && track_id(view) == track_undo_id) {
-        replace_track(track_undo_id / GSEQ_TRACKS, track_undo_id % GSEQ_TRACKS, &track_undo);
-        track_undo_kind = 0;
-    }
+    if (ok)
+        undo_track(&sequence_edits, track_id(view), kind);
+    return ok;
+}
+
+extern uint8_t gseq_stock_preset_copy(const void *);
+extern uint8_t gseq_stock_preset_paste(const void *, unsigned, unsigned);
+extern uint8_t gseq_stock_preset_clear(const void *, unsigned, unsigned, const char *, unsigned);
+extern uint8_t gseq_stock_preset_undo(const void *, unsigned, unsigned);
+
+uint8_t gseq_preset_copy(const void *view)
+{
+    uint8_t ok = gseq_stock_preset_copy(view);
+    if (ok)
+        copy_track(&preset_edits, sound_id(view));
+    return ok;
+}
+
+uint8_t gseq_preset_paste(const void *view, unsigned track, unsigned undo)
+{
+    uint8_t ok = gseq_stock_preset_paste(view, track, undo);
+    if (ok)
+        edit_track(&preset_edits, sound_id(view), (uint8_t)undo ? 2 : 0,
+                   preset_edits.ready ? &preset_edits.clipboard : &gseq_defaults);
+    return ok;
+}
+
+uint8_t gseq_preset_clear(const void *view, unsigned first, unsigned second, const char *name, unsigned undo)
+{
+    uint8_t ok = gseq_stock_preset_clear(view, first, second, name, undo);
+    if (ok)
+        edit_track(&preset_edits, sound_id(view), (uint8_t)undo ? 1 : 0, &gseq_defaults);
+    return ok;
+}
+
+uint8_t gseq_preset_undo(const void *view, unsigned track, unsigned kind)
+{
+    uint8_t ok = gseq_stock_preset_undo(view, track, kind);
+    if (ok)
+        undo_track(&preset_edits, sound_id(view), kind);
     return ok;
 }
 

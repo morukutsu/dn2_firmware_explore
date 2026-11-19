@@ -3,6 +3,131 @@
 The hardware-tested 0.4.1 baseline is commit `45268db`. The experiments below
 use Digitone II OS 1.11 and run outside that checkpoint.
 
+## Track-preset clipboard in 0.4.12-dev
+
+The owner reported that TRACK + COPY and TRACK + PASTE retained the
+destination's GEN SEQ parameters. The 0.4.11 combined image reproduces
+that result. Stock copies the track preset through a separate clipboard
+from the sequence clipboard already supported by GEN SEQ.
+
+The persistence build now wraps the stock preset operations at
+`0x4004d730` (copy), `0x4004d7c8` (paste), `0x4004d5f0` (clear), and
+`0x4004d016` (undo). Sound-view data identifies the project kit and synth
+track using the live kit's 52-byte sound offset and 1163-byte stride.
+Settings move only after stock reports success. The preset clipboard and
+undo snapshot remain separate from those for track sequences. Undo also
+checks the destination and project epoch. A successful copy from outside
+the project's synth sound grid invalidates the associated GEN SEQ copy.
+
+The combined Waverider and LFO Preview image passes preset copy, paste,
+clear and undo in the same pattern, across patterns and during playback.
+The cross-pattern test configures its occupied destination through the
+editor before taking the undo baseline. Preset operations preserve trigs.
+Paste copies the controls and seeds, clear disables GEN SEQ, and undo
+restores the previous configuration and working record. Sequence and
+pattern clipboard operations, TEMP restore, ordinary preset loading, and
+working-state flash followed by cold boot also pass on the rebuilt image.
+Copying an unconfigured track switches the destination to OFF. Undo
+restores its earlier configuration. The slow pytest clipboard regression
+also passes all five sequence and preset scenarios on a standalone
+persistence build.
+The focused GEN SEQ, LFO Preview and Waverider checks pass 53 tests with
+GCC 13.3. These runs do not include an instrument flash.
+
+The image and reports are in `out/genseq/0.4.12-combined/`. The failing
+control report is in `out/genseq/track-copy/repro/`.
+
+```sh
+./tools/with_m68k_gcc13.sh .venv/bin/python scripts/build_genseq.py \
+  --persistence-probe \
+  --waverider-preview-base out/genseq/hardware-test/waverider-lfopreview-base.syx \
+  --out out/genseq/0.4.12-combined
+.venv/bin/python scripts/emu_genseq_persist_ops.py \
+  out/genseq/0.4.12-combined/genseq-waverider-lfopreview-0.4.12-dev-persist_DN2_1.11.syx \
+  out/genseq/0.4.8-combined/project/working-bank.bin --without-lfo4 \
+  --out out/genseq/0.4.12-combined/operations-repeat
+DNFW_GENSEQ_WORKING_BANK=out/genseq/0.4.8-combined/project/working-bank.bin \
+  ./tools/with_m68k_gcc13.sh .venv/bin/python -m pytest \
+  test/test_genseq.py::test_track_preset_clipboard -q
+```
+
+## TEMP restore with the editor open in 0.4.11-dev
+
+The owner confirmed the first-pass fix on hardware. That firmware is
+checkpointed at `9c348baf49630d50c4ee344fc7117430b0516fe0`.
+The reported freeze and reboot after a MUT edit and FUNC + NO has not
+been reproduced. No firmware change is attributed to this investigation.
+
+Hardware incident log, updated 2026-11-19: the owner observed one freeze
+followed by a reboot while using FUNC + NO after changing MUT, with GEN
+SEQ open on PHRASE (page 2). No callstack appeared. The owner could not
+reproduce it and suspects a power issue. The cause remains unconfirmed.
+Further investigation is deferred while hardware testing continues.
+Record any recurrence and its operating conditions alongside this entry.
+
+The previous TEMP test left GEN SEQ before restore. The new
+`scripts/emu_genseq_reload.py` keeps PHRASE open during real stock TEMP
+SAVE and RELOAD gestures. It checks that MUT changed before each reload,
+that all 32 setting bytes return to their saved values, and that the
+editor remains on PHRASE. It also checks UI progress, emitted playback
+events, STOP, the firmware fault reporter, and stock software-reset sites.
+An editor-closed case provides a control. This is SSI-paced playback,
+without manually calling the note evaluator.
+
+The stopped, editor-closed, ANC, 16-track and REGEN 100 cases each passed
+64 reloads. Their reports are under
+`out/genseq/reload-investigation/stress/` and
+`out/genseq/reload-investigation/extra/regen/`.
+Short encoder waits missed some edits in the initial playback and LEN
+runs. Those runs completed without faults but are excluded from this
+MUT-edit coverage. The harness now waits for the encoder gestures to be
+processed before restoring.
+
+The corrected playback, simultaneous LEN-edit and active-Waverider cases
+each passed 32 further reloads. Together with the five 64-reload cases,
+416 checked MUT-edit and restore cycles passed. There were no firmware
+faults or watched software resets. Settings restored exactly, the editor
+responded, and playback emitted notes and stopped afterward. The final
+three reports are in `out/genseq/reload-investigation/settled/`.
+
+A separate, instrumented 64-restore run sampled SR at reload entry.
+Every sample was `0x2000`, with interrupt mask level zero. This rules out
+entry with all interrupts masked in that experiment. It does not measure
+every critical section inside the call. Stock sequence reload finishes
+before GEN SEQ reads the saved kit. Phrase construction takes place
+outside the short interrupt-masked publication. Publication invalidates
+pending regeneration drafts through their revision checks.
+
+The stock UI task has a 160 KiB stack at
+`0x4059da34..0x405c5a34`, allocated at `0x4002e8e8`.
+Reload entry SP was `0x405c57e0`. A sample at the codec entry was
+`0x405c55c0`. These samples show no ordinary stack exhaustion. They are
+not a complete stack high-water measurement.
+
+A reboot alone does not identify the cause. The stock firmware can
+request a software reset by writing `0x80` to `0xec090000`. The harness
+watches the seven verified OS 1.11 write sites, including the generic
+reset routine, console commands, external-event handlers and OS update.
+The vector-221 callback at `0x400f15f8` reaches a reset write at
+`0x400f1660` when its busy check permits it. The emergency-flush path
+reaches another at `0x400f1d26`. Their presence does not show that either
+was triggered by this hardware incident. A stalled task followed by a
+hardware watchdog reset is another hypothesis. The watchdog explanation
+has not been verified.
+
+The emulator does not reproduce every physical storage delay or external
+reset signal. A hardware reset-reason register or last-PC trace is needed
+to distinguish these hypotheses if the incident recurs. The current
+evidence does not establish a reload race or justify a speculative
+firmware fix.
+
+```sh
+.venv/bin/python scripts/emu_genseq_reload.py \
+  out/genseq/0.4.11-combined/genseq-waverider-lfopreview-0.4.11-dev-persist_DN2_1.11.syx \
+  out/genseq/0.4.8-combined/project/working-bank.bin \
+  --rounds 64 --jobs 3 --out out/genseq/reload-stress
+```
+
 ## GRV 22 first-pass investigation
 
 In 0.4.11-dev, finite EVT phrases with MUT, HOLD and REGEN at zero reset
