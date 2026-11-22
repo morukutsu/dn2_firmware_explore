@@ -5,6 +5,9 @@
 
 enum { GSEQ_TRACK_BYTES = 1701, GSEQ_PENDING = -2 };
 
+void gseq_capture_tag(const uint8_t *record, const uint8_t *copy, unsigned track,
+                       unsigned step, bool generated);
+void gseq_capture_position(const uint8_t *record, const uint8_t *copy, unsigned track, unsigned step);
 uint32_t gseq_schedule_for(const uint8_t *copy, unsigned track);
 bool gseq_host_reserved(const uint8_t *data, unsigned step);
 unsigned gseq_host_marker(const uint8_t *copy, unsigned track, unsigned step);

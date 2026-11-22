@@ -122,6 +122,7 @@ static uint32_t make_hit(unsigned track, const uint8_t *copy, const uint8_t *kit
         int swing_amount = swing_step ? ((int (*)(void))0x400d7cd0u)() : 0;
         *swing_offset = 18000 * (int)WORD(record, 88) * swing_amount;
     }
+    gseq_capture_tag(record, copy, track, step, true);
     return address;
 }
 
@@ -136,8 +137,12 @@ uint32_t gseq_produce(unsigned track, const uint8_t *copy, const uint8_t *kit,
         gseq_prepare_phrase(copy, track);
     uint16_t mask = schedule >> 16;
     if (step >= 128 || mode < MODE_FILL ||
-        (mode == MODE_FILL && gseq_host_reserved(copy + GSEQ_TRACK_BYTES * track, step)))
-        return gseq_stock_produce(track, copy, kit, step, scratch, offset, swing_offset);
+        (mode == MODE_FILL && gseq_host_reserved(copy + GSEQ_TRACK_BYTES * track, step))) {
+        uint32_t address = gseq_stock_produce(track, copy, kit, step, scratch, offset, swing_offset);
+        if (address)
+            gseq_capture_position((const uint8_t *)address, copy, track, step);
+        return address;
+    }
 
     if (!gseq_rhythm_hit(mask, step))
         return 0;

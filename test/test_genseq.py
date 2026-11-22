@@ -104,6 +104,9 @@ def codec(tmp_path_factory):
     loaded.gseq_phrase_prepare.restype = None
     loaded.gseq_phrase_publish.argtypes = [ct.POINTER(Phrase), ct.POINTER(DraftStep)]
     loaded.gseq_phrase_publish.restype = None
+    loaded.gseq_phrase_replace.argtypes = [ct.POINTER(Phrase), ct.POINTER(Phrase),
+                                          ct.POINTER(Track), ct.POINTER(Track), ct.c_bool, ct.c_bool]
+    loaded.gseq_phrase_replace.restype = None
     loaded.gseq_pitch_available.argtypes = [ct.POINTER(Track), PitchMap]
     loaded.gseq_pitch_available.restype = ct.c_bool
     loaded.gseq_pitch_pick.argtypes = [ct.POINTER(Track), PitchMap, ct.c_uint, ct.c_uint16]
@@ -290,6 +293,123 @@ def test_phrase_rejects_late_draft_at_wrap(codec):
 
 
 @pytest.mark.parametrize("length,phase", [(1, 0), (6, 0), (6, 2), (64, 17)])
+@pytest.mark.parametrize("hold", [0, 37, 100])
+def test_live_reload_preserves_event_clock_and_weighted_notes(codec, length, phase, hold):
+    cfg = Track.from_buffer_copy(Track.in_dll(codec, "gseq_defaults"))
+    cfg.control[6:9] = [length, hold, phase]
+    cfg.control[19], cfg.control[22:25] = 35, [-50, -100, 75]
+    cfg.rhythm, cfg.melody = 17, 257
+    control, restored, prepared = Phrase(), Phrase(), Phrase()
+    for p in (control, restored, prepared):
+        codec.gseq_phrase_build(p, cfg)
+    for event in range(150):
+        if event in (0, 4, 17, 49, 103):
+            codec.gseq_phrase_replace(restored, prepared, cfg, cfg, True, True)
+        for p in (control, restored):
+            latent = ct.c_uint16()
+            # next_event also resets locked-phrase pitch context at wraps.
+            codec.gseq_phrase_next_event(ct.byref(p), ct.byref(cfg), ct.byref(latent))
+            p.previous = codec.gseq_pitch_pick(cfg, PitchMap(0xfff, 0), p.previous, latent.value)
+        assert (restored.cursor, restored.reads, restored.wraps, restored.hold_rng, restored.previous) == (
+            control.cursor, control.reads, control.wraps, control.hold_rng, control.previous)
+
+
+@pytest.mark.parametrize("length,phase,expected", [(3, 1, 2), (8, 3, 7), (1, 0, 0)])
+def test_live_reload_restores_values_and_maps_changed_length(codec, length, phase, expected):
+    old = fixture_tracks(codec)[0]
+    old.control[6:11] = [6, 0, 2, 0, 100]
+    current = Phrase()
+    codec.gseq_phrase_build(current, old)
+    for _ in range(4):
+        codec.gseq_phrase_next(current, old)
+    draft = DraftStep()
+    assert codec.gseq_phrase_draft(current, old, draft)
+    codec.gseq_phrase_prepare(old, draft)
+    new = Track.from_buffer_copy(old)
+    new.control[6], new.control[8], new.melody = length, phase, 9123
+    prepared = Phrase()
+    codec.gseq_phrase_build(prepared, new)
+    current.previous = 63
+    codec.gseq_phrase_replace(current, prepared, old, new, True, True)
+    assert current.cursor == expected and current.reads == 4 % length
+    assert current.previous == 63 and current.has_last
+    assert current.last == prepared.slots[0][(expected + length - 1) % length]
+    assert list(current.slots[0][:length]) == list(prepared.slots[0][:length])
+    codec.gseq_phrase_publish(current, draft)
+    assert current.draft_reads == 0, 'a draft prepared before reload was accepted'
+
+
+@pytest.mark.parametrize("generator", [0, 1])
+def test_live_reload_keeps_infinite_stream(codec, generator):
+    cfg = fixture_tracks(codec)[0]
+    cfg.control[6], cfg.control[11] = 0, generator
+    control, restored, prepared = Phrase(), Phrase(), Phrase()
+    for p in (control, restored, prepared):
+        codec.gseq_phrase_build(p, cfg)
+    for event in range(100):
+        if event in (1, 8, 41):
+            codec.gseq_phrase_replace(restored, prepared, cfg, cfg, True, True)
+        assert codec.gseq_phrase_next(restored, cfg) == codec.gseq_phrase_next(control, cfg)
+        assert bytes(restored.stream) == bytes(control.stream)
+
+
+@pytest.mark.parametrize("bank,prepared_slots", [(0, 3), (1, 3), (0, 6), (1, 6)])
+def test_live_reload_preserves_compatible_regeneration_bank(codec, bank, prepared_slots):
+    cfg = fixture_tracks(codec)[0]
+    cfg.control[6:11] = [6, 0, 0, 0, 100]
+    current, prepared = Phrase(), Phrase()
+    codec.gseq_phrase_build(current, cfg)
+    codec.gseq_phrase_build(prepared, cfg)
+    current.bank = bank
+    for _ in range(5):
+        codec.gseq_phrase_next(current, cfg)
+    for _ in range(prepared_slots):
+        step = DraftStep()
+        assert codec.gseq_phrase_draft(current, cfg, step)
+        codec.gseq_phrase_prepare(cfg, step)
+        codec.gseq_phrase_publish(current, step)
+    values = list(current.slots[bank ^ 1][:prepared_slots])
+    stream = bytes(current.stream)
+    stale = DraftStep()
+    if prepared_slots < 6:
+        assert codec.gseq_phrase_draft(current, cfg, stale)
+        codec.gseq_phrase_prepare(cfg, stale)
+    codec.gseq_phrase_replace(current, prepared, cfg, cfg, True, True)
+    assert current.bank == 0 and current.draft_reads == prepared_slots
+    assert list(current.slots[1][:prepared_slots]) == values and bytes(current.stream) == stream
+    if prepared_slots < 6:
+        codec.gseq_phrase_publish(current, stale)
+        assert current.draft_reads == prepared_slots
+        for _ in range(6 - prepared_slots):
+            step = DraftStep()
+            assert codec.gseq_phrase_draft(current, cfg, step)
+            codec.gseq_phrase_prepare(cfg, step)
+            codec.gseq_phrase_publish(current, step)
+    misses = ct.c_uint32.in_dll(codec, 'gseq_regen_misses').value
+    codec.gseq_phrase_next(current, cfg)
+    assert current.bank == 1 and ct.c_uint32.in_dll(codec, 'gseq_regen_misses').value == misses
+
+
+@pytest.mark.parametrize("keep_clock,old_length,new_length,old_adv,new_adv", [
+    (False, 6, 6, 0, 0), (True, 0, 6, 0, 0), (True, 6, 0, 0, 0),
+    (True, 6, 6, 1, 0), (True, 6, 6, 0, 1)])
+def test_reload_restarts_when_clock_kind_changes(codec, keep_clock, old_length, new_length, old_adv, new_adv):
+    old = fixture_tracks(codec)[0]
+    old.control[6], old.control[8], old.control[27] = old_length, 0, old_adv
+    new = Track.from_buffer_copy(old)
+    new.control[6], new.control[8], new.control[27] = new_length, int(bool(new_length)), new_adv
+    current, prepared = Phrase(), Phrase()
+    codec.gseq_phrase_build(current, old)
+    for _ in range(4):
+        codec.gseq_phrase_next(current, old)
+    current.previous = 63
+    codec.gseq_phrase_build(prepared, new)
+    codec.gseq_phrase_replace(current, prepared, old, new, keep_clock, True)
+    assert current.cursor == new.control[8] and current.reads == 0
+    assert current.previous == 128 and not current.has_last
+
+
+@pytest.mark.parametrize("length,phase", [(1, 0), (6, 0), (6, 2), (64, 17)])
 def test_locked_event_phrase_repeats_realized_pitches(codec, length, phase):
     track = Track.from_buffer_copy(Track.in_dll(codec, "gseq_defaults"))
     track.control[0], track.control[2], track.control[6] = 3, 21, length
@@ -440,3 +560,24 @@ def test_track_preset_clipboard(prototype, tmp_path):
     for case in ("track", "track-preset", "track-preset-pattern", "track-preset-playing", "track-preset-empty"):
         report = run_panel(image, bank, tmp_path / case, settings, case, lfo4=False)
         assert all(report.values()), (case, report)
+
+
+@pytest.mark.slow
+def test_live_temp_reload_keeps_weighted_hold_phase(prototype, tmp_path):
+    import os
+    from build_genseq import build
+    from emu_genseq_reload_phase import run
+
+    fixture_bank = os.environ.get("DNFW_GENSEQ_WORKING_BANK")
+    if not fixture_bank:
+        pytest.skip("set DNFW_GENSEQ_WORKING_BANK to the saved-project working-bank.bin fixture")
+    _, stock = prototype
+    image = build(stock, tmp_path / "persist", persistence_probe=True)
+    bank = Path(fixture_bank).resolve(strict=True)
+    control, restored = [run(image, bank, tmp_path / str(reload), 'evt', 130_000_000,
+                             reload, weighted=True, hold=37, tail=850_000_000)
+                         for reload in (False, True)]
+    assert control['deadlines'] == restored['deadlines']
+    assert control['pitches'] == restored['pitches']
+    assert [(r['cursor'], r['reads']) for r in control['event_cursors']] == [
+        (r['cursor'], r['reads']) for r in restored['event_cursors']]

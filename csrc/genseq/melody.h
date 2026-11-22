@@ -40,6 +40,9 @@ struct gseq_pitch_table {
 };
 
 void gseq_phrase_build(struct gseq_phrase *phrase, const struct gseq_track *cfg);
+void gseq_phrase_replace(struct gseq_phrase *phrase, const struct gseq_phrase *prepared,
+                         const struct gseq_track *before, const struct gseq_track *cfg,
+                         bool keep_clock, bool reset_context);
 void gseq_phrase_restart(struct gseq_phrase *phrase, const struct gseq_track *cfg);
 void gseq_phrase_phase(struct gseq_phrase *phrase, const struct gseq_track *cfg);
 uint16_t gseq_phrase_next(struct gseq_phrase *phrase, const struct gseq_track *cfg);

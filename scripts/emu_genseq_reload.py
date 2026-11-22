@@ -63,6 +63,8 @@ def run(image, source_bank, out, case, rounds):
         if case == 'closed':
             panel += [*SHORTCUT, *SHORTCUT, *DOWN]
     panel += ['tap:21', 'wait:100M', 'frame:stopped', 'wait:100M', 'frame:quiet']
+    if case == 'regen':
+        panel += [f"peek:{symbols['gseq_regen_misses']:#x}:4"]
     pcs = (symbols['gseq_reload_pattern'], symbols['gseq_save_pattern_kit'],
            symbols['gseq_stock_reload_pattern'], symbols['gseq_load'], symbols['publish'])
     result = playback.run(image, editor_turns(image, panel), out / 'panel', runner=panel_drive(),
@@ -107,6 +109,9 @@ def run(image, source_bank, out, case, rounds):
     report = {'rounds': rounds, 'playing': playing, 'settings_restored_each_time': True,
               'faults': 0, 'software_resets': 0, 'ui_responsive': True, 'note_on_frames': len(ons),
               'reload_entry_sp_min': min(stacks), 'reload_entry_sp_max': max(stacks)}
+    if case == 'regen':
+        report['regeneration_misses'] = int(rows[-1]['hex'], 16)
+        assert report['regeneration_misses'] == 0, report
     (out / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
     return report
 

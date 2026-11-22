@@ -135,6 +135,57 @@ void gseq_phrase_build(struct gseq_phrase *phrase, const struct gseq_track *cfg)
     gseq_phrase_restart(phrase, cfg);
 }
 
+/* Called with interrupts masked after the UI has prepared the replacement.
+ * Sample the live cursor here, rather than before construction or disk I/O.
+ * Reload replaces musical values, while its running clock keeps progressing. */
+void gseq_phrase_replace(struct gseq_phrase *phrase, const struct gseq_phrase *prepared,
+                         const struct gseq_track *before, const struct gseq_track *cfg,
+                         bool keep_clock, bool reset_context)
+{
+    unsigned length = cfg->control[LEN], reads = phrase->reads;
+    unsigned previous = phrase->previous;
+    bool has_last = phrase->has_last;
+    bool same_clock = keep_clock && before->control[ADV] == cfg->control[ADV] &&
+                      ((!before->control[LEN]) == (!length));
+    bool keep_draft = same_clock && cfg->control[ADV] == ADV_EVENT && length &&
+                      before->control[LEN] == cfg->control[LEN] && before->melody_seed == cfg->melody_seed;
+    for (unsigned control = GEN_MODE; control <= MOMENT; ++control)
+        keep_draft &= before->control[control] == cfg->control[control];
+    if (keep_draft && phrase->bank)
+        for (unsigned slot = 0; slot < phrase->draft_reads; ++slot)
+            phrase->slots[1][slot] = phrase->slots[0][slot];
+    for (unsigned slot = 0; slot < length; ++slot)
+        phrase->slots[0][slot] = prepared->slots[0][slot];
+    phrase->bank = 0;
+    if (!keep_draft)
+        phrase->draft_reads = 0;
+    ++phrase->draft_revision;
+    phrase->seen[0] = phrase->seen[1] = 0;
+    if (!same_clock) {
+        phrase->wraps = 0;
+        phrase->stream.draws = 0;
+        phrase->hold_rng = prepared->hold_rng;
+        phrase->mutation_rng = prepared->mutation_rng;
+        phrase->regen_rng = prepared->regen_rng;
+        phrase->mutation.draws = 0;
+        gseq_phrase_restart(phrase, cfg);
+        if (!reset_context)
+            phrase->previous = previous;
+    } else if (length) {
+        /* Compatible draft values survive so a reload just before wrap does
+         * not miss REGEN. Any in-flight work still fails its revision check. */
+        if (!keep_draft)
+            phrase->stream.draws = 0;
+        phrase->reads = cfg->control[ADV] == ADV_EVENT ? reads % length : 0;
+        phrase->cursor = (cfg->control[PHASE] + phrase->reads) % length;
+        phrase->has_last = cfg->control[ADV] == ADV_EVENT && has_last;
+        if (phrase->has_last)
+            phrase->last = phrase->slots[0][(phrase->cursor + length - 1) % length];
+    }
+    /* INF -> INF leaves its bounded generator state and context in place.
+     * Restored controls affect subsequent draws. A fresh PLAY restarts it. */
+}
+
 bool gseq_phrase_draft(const struct gseq_phrase *phrase, const struct gseq_track *cfg,
                        struct gseq_draft_step *step)
 {

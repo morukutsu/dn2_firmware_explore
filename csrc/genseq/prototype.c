@@ -1,6 +1,8 @@
 #include "ui.h"
 #include "schedule.h"
 #include "melody.h"
+#include "commit.h"
+#include "stock_seq.h"
 #ifdef GSEQ_PERSISTENCE_PROBE
 #include "../include/dn2_111.h"
 #endif
@@ -62,7 +64,9 @@ static uint16_t anchor_masks[GSEQ_PATTERNS];
 #define CLOCK_SPEED ((const volatile uint8_t *)0x42c5a9d9u)
 #define CLOCK_STAMP (*(const volatile uint32_t *)0x44648480u)
 #define CLOCK_RUNNING (*(const volatile uint32_t *)0x42c5a918u)
-#define CLOCK_HELD (*(const volatile uint32_t *)0x42c4e908u)
+/* Stock reloads this subdivision countdown to 900,000 at 0x400daa88
+ * and subtracts its timing quantum at 0x400daad6. It is not a pause flag. */
+#define CLOCK_REMAINDER (*(const volatile uint32_t *)0x42c4e908u)
 #define CLOCK_SPEEDS ((const uint32_t *)0x401f6b08u)
 enum { SUBDIVISION = 900000, NO_SLOT = 0xff };
 
@@ -80,11 +84,157 @@ struct live_track {
 };
 static struct live_track live_tracks[GSEQ_TRACKS];
 
+/* Capture owns its private clipboard. Audio-side code only writes bounded
+ * samples and state. Allocation, baking and paste stay on the UI thread. */
+static struct gseq_capture capture;
+static struct gseq_seq_clip capture_clip;
+volatile uint32_t gseq_capture_active;
+static const uint8_t *capture_copy;
+static unsigned capture_pattern, capture_track, capture_target_pattern, capture_target_track;
+#ifdef GSEQ_PERSISTENCE_PROBE
+static unsigned capture_epoch, capture_edit_revision;
+#endif
+static unsigned capture_mode;
+static const uint8_t *capture_source_data;
+static bool capture_open, capture_confirm, capture_baked, capture_waiting, capture_undo_ready;
+static uint32_t capture_transport, capture_origin;
+static bool capture_clock_valid, capture_fresh_start;
+static const char *capture_message;
+struct capture_tag { const uint8_t *record; uint8_t step, generated; };
+static struct capture_tag capture_tags[128];
+
+static void capture_cancel(void)
+{
+    uint16_t status = gseq_interrupt_mask();
+    gseq_capture_active = 0;
+    capture.state = CAP_IDLE;
+    gseq_interrupt_restore(status);
+    gseq_seq_release(&capture_clip);
+    capture_open = capture_confirm = capture_baked = capture_undo_ready = false;
+}
+
+void gseq_capture_leave(void)
+{
+    /* A stock track/page switch can hide the child before its next UI tick. */
+    if (gseq_capture_active || (capture_open && capture.state != CAP_READY))
+        capture_cancel();
+    else if (capture.state == CAP_READY)
+        capture_confirm = false;
+}
+
+void gseq_capture_tag(const uint8_t *record, const uint8_t *copy, unsigned track,
+                       unsigned step, bool generated)
+{
+    (void)track;
+    /* Keep queued-record identity before the player arms capture. Stock can
+     * prepare the next cycle's first onset before its clock is published.
+     * The 128 pool records are 108 bytes apart, so their /4 hashes are
+     * distinct modulo 128. Exclude stack scratch and cached copies, which
+     * could alias a live pool record. Stock builds this pool at 0x401388b4. */
+    uintptr_t address = (uintptr_t)record;
+    if (!copy || address < 0x44640c28u || address >= 0x44644228u || step >= 128)
+        return;
+    unsigned slot = (address / 4) % 128;
+    capture_tags[slot] = (struct capture_tag){record, step, generated};
+}
+
 static unsigned track_length(const uint8_t *copy, unsigned track)
 {
     const uint8_t *length = copy[122201] == 1
         ? copy + GSEQ_TRACK_BYTES * track + 1164 : copy + 122196;
     return (unsigned)length[0] << 8 | length[1];
+}
+
+void gseq_capture_position(const uint8_t *record, const uint8_t *copy, unsigned track, unsigned step)
+{
+    if ((gseq_schedule_for(copy, track) & 3u) == MODE_FILL)
+        gseq_capture_tag(record, copy, track, step, false);
+}
+
+static void capture_clock(const uint8_t *copy, uint32_t when)
+{
+    capture_clock_valid = false;
+    if (!gseq_capture_active)
+        return;
+    if (capture_waiting && CLOCK_RUNNING == 1) {
+        capture_waiting = false;
+        capture_transport = gseq_transport;
+    }
+    if (copy != capture_copy || gseq_transport != capture_transport) {
+        capture.state = CAP_ERROR;
+        capture.error = CAP_CHANGED;
+    } else if (CLOCK_RUNNING == 1) {
+        unsigned length = track_length(copy, capture_track), speed = CLOCK_SPEED[capture_track];
+        unsigned step = CLOCK_STEP[capture_track], sub = CLOCK_SUBDIVISION[capture_track];
+        unsigned divisions = speed < 7 ? CLOCK_SPEEDS[speed] : 0;
+        int32_t delta = when - CLOCK_STAMP;
+        if (!divisions || length != capture.length || step >= length || sub >= divisions) {
+            capture.state = CAP_ERROR;
+            capture.error = CAP_CLOCK;
+        } else if (delta >= -2 * SUBDIVISION && delta <= 2 * SUBDIVISION) {
+            unsigned units = length * divisions;
+            int position = step * divisions + sub;
+            uint32_t published_origin = CLOCK_STAMP - (uint32_t)position * SUBDIVISION;
+            /* Normalize the local signed deadline offset before multiplying
+             * the cycle length. A long slow cycle can exceed 32-bit time. */
+            while (delta < 0) {
+                --position;
+                delta += SUBDIVISION;
+            }
+            while (delta >= SUBDIVISION) {
+                ++position;
+                delta -= SUBDIVISION;
+            }
+            if (position < 0)
+                position += units;
+            if ((unsigned)position >= units)
+                position -= units;
+            uint32_t cycle = units * SUBDIVISION;
+            uint32_t origin = when - ((uint32_t)position * SUBDIVISION + delta);
+            if (capture_fresh_start) {
+                /* The cached first onset can precede clock publication.
+                 * Start after that published cycle, never partway through it.
+                 * Its first frame can still project into the previous cycle. */
+                if (!capture.cycle)
+                    gseq_capture_clock(&capture, CLOCK_STAMP, published_origin, cycle);
+                if (origin == capture.start - 2 * cycle)
+                    return;
+                capture_fresh_start = false;
+            }
+            capture_origin = origin;
+            capture_clock_valid = true;
+            gseq_capture_clock(&capture, when, origin, cycle);
+        }
+    }
+    if (capture.state == CAP_READY || capture.state == CAP_ERROR)
+        gseq_capture_active = 0;
+}
+
+static void capture_note(const uint8_t *record, const uint8_t *copy, uint32_t when)
+{
+    if (!gseq_capture_active || WORD(record, 16) != capture_track)
+        return;
+    capture_clock(copy, when);
+    /* Stock can dispatch its cached first onset before publishing a running
+     * clock. That onset precedes our next full cycle and is not captured. */
+    if (gseq_capture_active && capture.state == CAP_RUNNING &&
+        CLOCK_RUNNING == 1 && !capture_clock_valid) {
+        capture.state = CAP_ERROR;
+        capture.error = CAP_CLOCK;
+        gseq_capture_active = 0;
+    }
+    if (!gseq_capture_active || !capture_clock_valid || capture.state != CAP_RUNNING ||
+        capture_origin != capture.start)
+        return;
+    struct capture_tag *tag = &capture_tags[((uintptr_t)record / 4) % 128];
+    if (tag->record != record) {
+        capture.state = CAP_ERROR;
+        capture.error = CAP_CONFLICT;
+        gseq_capture_active = 0;
+        return;
+    }
+    gseq_capture_note(&capture, capture_origin, tag->step, record[38], tag->generated);
+    tag->record = 0;
 }
 
 static struct live_track *live_track(unsigned pattern, unsigned track)
@@ -224,7 +374,10 @@ void gseq_frame_clock(uint32_t when)
 {
     const uint8_t *copy = PATTERN_COPY;
     observe_history_copy(copy);
-    if (!gseq_anchor_count || CLOCK_RUNNING != 1 || CLOCK_HELD)
+    capture_clock(copy, when);
+    /* Retain the live engine's existing subdivision-boundary polling.
+     * Capture above must also observe admissions between those boundaries. */
+    if (!gseq_anchor_count || CLOCK_RUNNING != 1 || CLOCK_REMAINDER)
         return;
     unsigned pattern = pattern_index(copy);
     if (pattern >= GSEQ_PATTERNS)
@@ -280,6 +433,7 @@ void gseq_observe_pattern(void)
 
 void gseq_reset(void)
 {
+    capture_cancel();
     gseq_editor_view = 0;
     actions_open = false;
     ++gseq_transport;
@@ -419,8 +573,9 @@ void gseq_queue_patterns(const uint8_t *entries, unsigned count)
 /* Tag accepted stock producer records without editing their pattern note.
  * A negative index selects the stock inline entry. The dispatch hook
  * normalizes the index before stock can derive any copies or releases. */
-void gseq_mark_note(uint8_t *record, const uint8_t *copy, unsigned track)
+void gseq_mark_note(uint8_t *record, const uint8_t *copy, unsigned track, unsigned step)
 {
+    gseq_capture_tag(record, copy, track, step, false);
     if (!(gseq_schedule_for(copy, track) & 3u) || !(WORD(record, 56) & 1u))
         return;
 
@@ -494,6 +649,10 @@ bool gseq_admit(uint8_t *record, uint32_t deadline)
         bool mutated = gseq_phrase_next_event(phrase, cfg, &latent);
         if (slot != phrase->cursor || (cfg->control[LEN] == 1 && phrase->has_last))
             live->slot = slot;
+        else if (live->slot == NO_SLOT && cfg->control[LEN] && phrase->has_last)
+            /* Reload clears plot history. A held value still belongs to the
+             * preceding slot even when this event does not move the cursor. */
+            live->slot = (phrase->cursor + cfg->control[LEN] - 1) % cfg->control[LEN];
         if (mutated) {
             live->flash = slot;
             live->flash_at = UI_TICK;
@@ -501,6 +660,7 @@ bool gseq_admit(uint8_t *record, uint32_t deadline)
     }
     unsigned note = gseq_pitch_select(table, cfg, map, phrase->previous, latent);
     phrase->previous = record[38] = note;
+    capture_note(record, copy, deadline);
     live->latent[live->head] = latent;
     live->note[live->head] = note;
     live->head = (live->head + 1) % GSEQ_HISTORY;
@@ -528,8 +688,13 @@ static void init(struct gseq_track *cfg, unsigned pattern, unsigned track)
 }
 
 static void publish(unsigned pattern, unsigned track, const struct gseq_track *cfg,
-                    bool rebuild, bool reset_context, unsigned field)
+                    bool rebuild, bool reset_context, unsigned field, bool keep_clock)
 {
+    if (gseq_capture_active && pattern == capture_pattern && track == capture_track) {
+        capture.state = CAP_ERROR;
+        capture.error = CAP_CHANGED;
+        gseq_capture_active = 0;
+    }
     struct gseq_phrase prepared;
     struct gseq_phrase *phrase = &phrases[pattern][track];
     if (rebuild)
@@ -556,22 +721,10 @@ static void publish(unsigned pattern, unsigned track, const struct gseq_track *c
      * interrupt-owned cursor is touched only while publishing. */
     uint16_t status = gseq_interrupt_mask();
     if (rebuild) {
-        unsigned previous = phrase->previous;
-        for (unsigned slot = 0; slot < (unsigned)cfg->control[LEN]; ++slot)
-            phrase->slots[0][slot] = prepared.slots[0][slot];
-        phrase->bank = 0;
-        phrase->wraps = 0;
-        phrase->draft_reads = 0;
-        ++phrase->draft_revision;
-        phrase->stream.draws = 0;
-        phrase->hold_rng = prepared.hold_rng;
-        phrase->mutation_rng = prepared.mutation_rng;
-        phrase->regen_rng = prepared.regen_rng;
-        phrase->mutation.draws = 0;
-        phrase->seen[0] = phrase->seen[1] = 0;
-        gseq_phrase_restart(phrase, cfg);
-        if (!reset_context)
-            phrase->previous = previous;
+        bool running = keep_clock && CLOCK_RUNNING == 1 && pattern_index(PATTERN_COPY) == pattern &&
+                       last_pattern[track] == pattern && last_transport[track] == gseq_transport &&
+                       settings[pattern][track].control[TRIG_MODE] && cfg->control[TRIG_MODE];
+        gseq_phrase_replace(phrase, &prepared, &settings[pattern][track], cfg, running, reset_context);
     } else if (field == TRIG_MODE) {
         /* Re-enabling a rhythm mode starts the current phrase predictably.
          * Finite slots survive the toggle, as they do on STOP/PLAY. */
@@ -697,7 +850,7 @@ uint8_t gseq_load_project(void *project, const uint8_t *image, void *progress)
             continue;
         for (unsigned track = 0; track < GSEQ_TRACKS; ++track)
             if (snapshot[track].melody_seed)
-                publish(pattern, track, &snapshot[track], true, true, TRIG_MODE);
+                publish(pattern, track, &snapshot[track], true, true, TRIG_MODE, false);
     }
     /* Stock populated its stopped first-step records before our settings
      * existed. Refresh them after the live project has its GEN SEQ controls. */
@@ -713,7 +866,7 @@ static void publish_edit(unsigned pattern, unsigned track, const struct gseq_tra
                          bool rebuild, bool reset_context, unsigned field)
 {
     uint32_t before = schedules[pattern][track];
-    publish(pattern, track, cfg, rebuild, reset_context, field);
+    publish(pattern, track, cfg, rebuild, reset_context, field, false);
     /* Stock prepares the first step before PLAY. A rhythm edit while stopped
      * must replace the old scratch record just like an edit to a stock trig. */
     uint32_t after = schedules[pattern][track];
@@ -916,11 +1069,11 @@ static unsigned pattern_list_size(const struct pattern_list *list)
     return n <= GSEQ_PATTERNS * sizeof(unsigned) && !(n % sizeof(unsigned)) ? n / sizeof(unsigned) : 0;
 }
 
-static void replace_pattern(unsigned pattern, const struct gseq_track *tracks)
+static void replace_pattern(unsigned pattern, const struct gseq_track *tracks, bool keep_clock)
 {
     for (unsigned track = 0; track < GSEQ_TRACKS; ++track) {
         const struct gseq_track *cfg = tracks && tracks[track].melody_seed ? &tracks[track] : &gseq_defaults;
-        publish(pattern, track, cfg, true, true, CONTROL_COUNT);
+        publish(pattern, track, cfg, true, true, CONTROL_COUNT, keep_clock);
     }
     if (pattern_index(PATTERN_COPY) == pattern) {
         ++gseq_history_epoch;
@@ -946,7 +1099,7 @@ static void edit_patterns(const void *app, const struct pattern_list *list, unsi
     }
     for (unsigned i = 0; i < pattern_undo_size; ++i)
         if (pattern_undo_list[i] < GSEQ_PATTERNS)
-            replace_pattern(pattern_undo_list[i], tracks);
+            replace_pattern(pattern_undo_list[i], tracks, false);
 }
 
 uint8_t gseq_pattern_paste(const void *app, const struct pattern_list *list, unsigned undo)
@@ -979,7 +1132,7 @@ uint8_t gseq_pattern_undo(const void *app, const struct pattern_list *list, unsi
             return ok;
     for (unsigned i = 0; i < pattern_undo_size; ++i) {
         unsigned pattern = pattern_undo_list[i];
-        replace_pattern(pattern, pattern_undo[pattern]);
+        replace_pattern(pattern, pattern_undo[pattern], false);
     }
     pattern_undo_kind = 0;
     return ok;
@@ -1008,7 +1161,7 @@ uint8_t gseq_reload_pattern(const void *app, unsigned temporary, unsigned patter
     if (((int (*)(void *, void *, unsigned, unsigned, unsigned))0x4012d82eu)
             (storage, stored_kit, slot, sector, GSEQ_KIT_BYTES) == 0 && stored_kit[0] == 0xbeefbaceu) {
         struct gseq_track tracks[GSEQ_TRACKS];
-        replace_pattern(pattern, gseq_load((const uint8_t *)stored_kit, tracks, PERSISTENCE_REVISION) ? tracks : 0);
+        replace_pattern(pattern, gseq_load((const uint8_t *)stored_kit, tracks, PERSISTENCE_REVISION) ? tracks : 0, true);
     }
     return ok;
 }
@@ -1043,10 +1196,132 @@ void gseq_probe_workload(const uint8_t *bytes, unsigned length)
         c[MOVE] = 75;
         c[PITCH_BIAS] = 50;
         c[SCALE] = CHROMATIC;
-        publish(pattern, track, &cfg, true, true, TRIG_MODE);
+        publish(pattern, track, &cfg, true, true, TRIG_MODE, false);
     }
 }
 #endif
+
+static void capture_arm(void *view, unsigned pattern, unsigned track)
+{
+    (void)view;
+    capture_cancel();
+    capture_open = true;
+    capture_message = 0;
+#ifdef GSEQ_PERSISTENCE_PROBE
+    void *app = (void *)((uintptr_t (*)(void))0x4018a97au)();
+    const void *project = object_data(app);
+    /* A GUI overlay is installed after stock loaded its project. Match the
+     * serializer's initial attach rule without resetting the edited controls. */
+    if (!settings_project && !project_epoch)
+        settings_project = project;
+    if (!project || settings_project != project) {
+        capture_message = "Project not ready";
+        return;
+    }
+    void *source = gseq_seq_view(app, pattern, track);
+    if (!settings[pattern][track].control[TRIG_MODE]) {
+        capture_message = "Enable GEN SEQ first";
+        return;
+    }
+    const uint8_t *data = (const uint8_t *)gseq_seq_data(source);
+    if (!gseq_seq_snapshot(&capture_clip, source)) {
+        capture_message = "Not enough memory";
+        return;
+    }
+    uint16_t status = gseq_interrupt_mask();
+    capture_copy = PATTERN_COPY;
+    capture_pattern = capture_target_pattern = pattern;
+    capture_track = capture_target_track = track;
+    capture_mode = settings[pattern][track].control[TRIG_MODE];
+    capture_source_data = data;
+    capture_epoch = project_epoch;
+    capture_transport = gseq_transport;
+    capture_waiting = CLOCK_RUNNING != 1;
+    capture_fresh_start = capture_waiting;
+    gseq_capture_arm(&capture, track_length(capture_copy, track));
+    gseq_capture_active = capture.state == CAP_ARMED;
+    gseq_interrupt_restore(status);
+#else
+    (void)view; (void)pattern; (void)track;
+    capture_message = "Use project build";
+#endif
+}
+
+static void capture_paste(void *view)
+{
+    (void)view;
+#ifdef GSEQ_PERSISTENCE_PROBE
+    if (capture.state != CAP_READY || capture_epoch != project_epoch)
+        return;
+    void *app = (void *)((uintptr_t (*)(void))0x4018a97au)();
+    void *target = gseq_seq_view(app, capture_target_pattern, capture_target_track);
+    const uint8_t *data = (const uint8_t *)gseq_seq_data(target);
+    const uint8_t *kit = settings_project + DN2_PROJECT_KITS + DN2_KIT_BYTES * capture_target_pattern;
+    if (*(const uint16_t *)(kit + KIT_MIDI_MASK) & (1u << capture_target_track)) {
+        capture_message = "Choose a synth track";
+        capture_confirm = false;
+        return;
+    }
+    /* Pattern view data starts with the sixteen tracks. Shared length is a
+     * pattern property, so changing it here would resize unrelated tracks. */
+    const uint8_t *pattern = data - GSEQ_TRACK_BYTES * capture_target_track;
+    if (pattern[122201] != 1 &&
+        ((unsigned)pattern[122196] << 8 | pattern[122197]) != capture.length) {
+        capture_message = "USE PER TRACK";
+        capture_confirm = false;
+        return;
+    }
+    unsigned source = WORD(capture_clip.data, 96668);
+    if (!capture_baked) {
+        capture_baked = gseq_capture_bake(&capture, capture_clip.data + GSEQ_SEQ_TRACK,
+            capture_clip.data + GSEQ_SEQ_NOTES, capture_clip.data + GSEQ_SEQ_LOCKS, source,
+            capture_mode);
+        if (!capture_baked) {
+            capture.state = CAP_ERROR;
+            capture_message = 0;
+            return;
+        }
+    }
+    if (!gseq_paste_capacity(capture_clip.data + GSEQ_SEQ_NOTES, capture_clip.data + GSEQ_SEQ_LOCKS,
+            source, (const uint8_t *)gseq_seq_data((void *)WORD(target, 48)),
+            (const uint8_t *)gseq_seq_data((void *)WORD(target, 44)), WORD(target, 60))) {
+        capture_message = "Pattern pool is full";
+        capture_confirm = false;
+        return;
+    }
+    if (!gseq_seq_paste(&capture_clip, target)) {
+        capture_message = "Paste failed";
+        return;
+    }
+    struct gseq_track off;
+    COPY(&off, &settings[capture_target_pattern][capture_target_track], sizeof off);
+    off.control[TRIG_MODE] = MODE_OFF;
+    edit_track(&sequence_edits, track_id(target), 2, &off);
+    capture_cancel();
+    capture_open = true;
+    capture_message = "Sequence committed";
+    capture_undo_ready = true;
+    capture_edit_revision = settings_revision[capture_target_pattern];
+#else
+    (void)view;
+#endif
+}
+
+static void capture_undo(void)
+{
+#ifdef GSEQ_PERSISTENCE_PROBE
+    void *app = (void *)((uintptr_t (*)(void))0x4018a97au)();
+    void *target = gseq_seq_view(app, capture_target_pattern, capture_target_track);
+    unsigned id = capture_target_pattern * GSEQ_TRACKS + capture_target_track;
+    bool available = project_epoch == capture_epoch &&
+                     capture_edit_revision == settings_revision[capture_target_pattern] &&
+                     sequence_edits.epoch == project_epoch &&
+                     sequence_edits.kind == 2 && sequence_edits.id == id;
+    bool ok = available && gseq_track_undo(target, 2);
+    capture_message = ok ? "Commit undone" : "Undo unavailable";
+#endif
+    capture_undo_ready = false;
+}
 
 static void run_action(void *view)
 {
@@ -1054,6 +1329,10 @@ static void run_action(void *view)
     struct gseq_track *cfg = selection(view, &pattern, &track);
     if (!cfg)
         return;
+    if (editor_action == ACTION_COMMIT) {
+        capture_arm(view, pattern, track);
+        return;
+    }
     struct gseq_track next;
     COPY(&next, cfg, sizeof next);
     bool fresh = !next.melody_seed;
@@ -1082,6 +1361,8 @@ unsigned gseq_key(void *view, void *event)
     if (key == 4 && (flags & 2)
         && ((unsigned (*)(void *))0x40063b10u)(view) == 3) {
         if ((flags & 9) == 1) {
+            if (capture_open && gseq_editor_view == view)
+                capture_cancel();
             gseq_editor_view = view == gseq_editor_view ? 0 : view;
             editor_page = PAGE_TRIG;
             edited = 0;
@@ -1098,13 +1379,34 @@ unsigned gseq_key(void *view, void *event)
     if (view == gseq_editor_view && !(flags & 2)
         && (key == 10 || key == 11 || key == 12 || key == 14)) {
         if (flags & 1) {
+            if (capture_open) {
+                if (key == 12) {
+                    if (capture_confirm)
+                        capture_confirm = false;
+                    else if (capture_message && capture.state == CAP_READY)
+                        capture_message = 0;
+                    else
+                        capture_cancel();
+                } else if (key == 10 && capture_undo_ready) {
+                    capture_undo();
+                } else if (key == 10 && capture.state == CAP_READY) {
+                    if (capture_confirm)
+                        capture_paste(view);
+                    else
+                        capture_confirm = true;
+                }
+                REDRAW(view);
+                return 1;
+            }
             if (actions_open) {
                 if (key == 10)
                     run_action(view);
                 if (key == 10 || key == 12)
                     actions_open = false;
-                else
-                    editor_action = key == 11 ? ACTION_RHYTHM : ACTION_PHRASE;
+                else if (key == 11 && editor_action > ACTION_RHYTHM)
+                    --editor_action;
+                else if (key == 14 && editor_action + 1 < ACTION_COUNT)
+                    ++editor_action;
                 REDRAW(view);
                 return 1;
             }
@@ -1210,6 +1512,17 @@ unsigned gseq_encoder(void *secondary, void *event)
     unsigned encoder = ((unsigned (*)(void *))0x40113166u)(event);
     if (encoder < 1 || encoder > 8)
         return STOCK_ENCODER(secondary, event);
+    if (capture_open) {
+        if (capture.state == CAP_READY && !capture_confirm && encoder <= 2) {
+            int delta = encoder_steps(event, encoder, BANK, 0);
+            unsigned *value = encoder == 1 ? &capture_target_pattern : &capture_target_track;
+            int next = (int)*value + delta, high = encoder == 1 ? 127 : 15;
+            *value = next < 0 ? 0 : next > high ? high : next;
+            capture_message = 0;
+            REDRAW(view);
+        }
+        return 1;
+    }
     if (actions_open)
         return 1;
 
@@ -1421,6 +1734,33 @@ void gseq_tick(void *view)
         REDRAW(view);
     }
     unsigned now = UI_TICK;
+    if (capture_open) {
+        static unsigned shown_state;
+#ifdef GSEQ_PERSISTENCE_PROBE
+        if (capture_epoch != project_epoch && capture_clip.data) {
+            capture_cancel();
+            REDRAW(view);
+            return;
+        }
+#endif
+        if (gseq_capture_active) {
+            bool changed = pattern != capture_pattern || track != capture_track;
+            for (unsigned i = 0; !changed && i < GSEQ_TRACK_BYTES; ++i)
+                changed = capture_source_data[i] != capture_clip.data[GSEQ_SEQ_TRACK + i];
+            if (changed) {
+                uint16_t status = gseq_interrupt_mask();
+                capture.state = CAP_ERROR;
+                capture.error = CAP_CHANGED;
+                gseq_capture_active = 0;
+                gseq_interrupt_restore(status);
+            }
+        }
+        if (shown_state != capture.state) {
+            shown_state = capture.state;
+            REDRAW(view);
+        }
+        return;
+    }
     if (!actions_open && cfg && now - asked_at >= 5) {
         struct gseq_plot plot;
         snapshot_plot(&plot, editor_page, cfg->melody_seed ? cfg : &gseq_defaults, pattern, track);
@@ -1444,6 +1784,13 @@ void gseq_draw(void *view, void *canvas)
 {
     if (view != gseq_editor_view) {
         ((void (*)(void *, void *))0x4006de74u)(view, canvas);
+        return;
+    }
+    if (capture_open) {
+        gseq_draw_capture(view, canvas, &capture, capture_target_pattern, capture_target_track,
+                          capture_confirm, capture_message,
+                          capture.state == CAP_READY && capture_clip.data ? gseq_capture_trigs(&capture,
+                              capture_clip.data + GSEQ_SEQ_TRACK, capture_mode) : 0, capture_undo_ready);
         return;
     }
     if (actions_open) {

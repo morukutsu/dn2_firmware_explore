@@ -5,11 +5,12 @@ gseq_note_hook:
     /* Original arguments 1 and 2 are the track and playback copy.
      * d4 can already hold a sound-lock offset at this point. */
     lea     56(%sp),%a0
+    move.l  %d3,-(%sp)
     move.l  (%a0),-(%sp)
     move.l  4(%a0),-(%sp)
     move.l  %a3,-(%sp)
     jsr     gseq_mark_note
-    lea     12(%sp),%sp
+    lea     16(%sp),%sp
     move.l  %fp,84(%a3)
     move.l  %a3,%d0
     jmp     0x400d8ae8
@@ -52,6 +53,8 @@ gseq_reset_clock_hook:
 
     .global gseq_frame_hook
 gseq_frame_hook:
+    tst.l   gseq_capture_active
+    bne.s   2f
     tst.l   gseq_anchor_count
     bne.s   2f
     move.l  0x42c5a9a0,%d0
@@ -95,6 +98,7 @@ gseq_prepare_hook:
 
     .global gseq_show
 gseq_show:
+    jsr     gseq_capture_leave
     clr.l   gseq_editor_view
     link.w  %fp,#-40
     movem.l %d2-%d4/%a2-%a4,(%sp)

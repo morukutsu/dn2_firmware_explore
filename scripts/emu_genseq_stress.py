@@ -20,7 +20,7 @@ from dnfw.mods import platform
 from dnfw.patch import area
 from emu_genseq import DOWN, SHORTCUT, editor_turns, frames
 from emu_genseq_paste import select
-from emu_genseq_perf import AUDIO, intervals, peak, workload
+from emu_genseq_perf import AUDIO, frame_budget, intervals, peak, workload
 from emu_genseq_rhythm import PLAYBACK
 from emu_seqplay import panel_drive
 from emulib import playback
@@ -29,7 +29,7 @@ THUNK, CONFIG = 0x46f1f000, 0x46f1e000
 PATTERN_BYTES, TRACK_BYTES = 122478, 1701
 CHUNK = 200_000_000
 COUNTERS = ("gseq_pitch_misses", "gseq_regen_misses", "gseq_pool_drops", "gseq_collision_drops")
-CASES = ("event-gen", "event-fill", "anchor-short", "locked-gen", "changes")
+CASES = ("event-gen", "event-fill", "dense-fill", "anchor-short", "locked-gen", "changes")
 
 
 def default_config(image, symbols):
@@ -48,7 +48,7 @@ def configure(default, symbols, case, pattern=0):
     code, configs = bytearray(), bytearray()
     for track in range(16):
         cfg = bytearray(default)
-        cfg[0] = 2 if case == "event-fill" else 3
+        cfg[0] = 2 if case in ("event-fill", "dense-fill") else 3
         if case == "changes":
             cfg[0] = 1 + track % 3
         locked = case == "locked-gen"
@@ -82,6 +82,11 @@ def heartbeat(symbols, label):
 def run(image, symbols, default, case, chunks, out):
     programmed = "fill" if case == "event-fill" else "seq"
     steps = workload(16, programmed, False, True, 1 if case == "anchor-short" else 16)
+    if case == "dense-fill":
+        # GRV 32 is 0xdddd (12 hits). Put host trigs in its four gaps:
+        # FILL then emits all 16 steps, rather than calling GRV 32 full density.
+        values = "".join("0391" if 0x2222 & (1 << i) else "0000" for i in range(16))
+        steps += [f"poke:{PLAYBACK + track * TRACK_BYTES:#x}:{values}" for track in range(16)]
     if case == "changes":
         # A02 is populated before playback so boundary switches always have
         # an active destination. Both patterns use stock 2x track speed.
@@ -173,6 +178,9 @@ def summarize(result, case, chunks, out):
                   audio_frames=len(intervals(result["captures"], *AUDIO)),
                   track_1_machine_types=sorted(machine_types),
                   firmware_faults=0, misses_and_drops=0, stopped_cleanly=True, ui_responsive=True)
+    report["playback_frame_budget"] = frame_budget([
+        row for row in result["captures"]
+        if markers["begin"]["icount"] <= row["icount"] < markers[f"beat{chunks-1:03}"]["icount"]])
     (out / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
     return report
 

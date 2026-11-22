@@ -13,6 +13,23 @@ None of these projects is affiliated with Elektron, and neither is this one.
 
 ---
 
+## Digikit panel driver
+
+digikit by Em D - <https://github.com/ElekLabs/digikit>
+
+Copyright (C) 2026 Em D. AGPL-3.0-or-later, with the additional attribution,
+origin and name terms in Digikit's `NOTICE`.
+
+`tools/build_panel_drive.py` generates a modified panel driver from a local
+Digikit checkout. It changes the progress guard to permit bounded interrupt
+entries that do not execute a CPU instruction. Its `ram` step loads test probes
+through the existing debugger RAM API. The emulator core and guest fault limits
+are unchanged.
+The generated project is marked as modified and carries copies of Digikit's
+full `NOTICE` and `LICENSE`. Generated source and binaries remain under `out/`.
+
+---
+
 ## elektron-firmware-tool
 
 <https://github.com/mischa85/elektron-firmware-tool> — Marcel Bierling.

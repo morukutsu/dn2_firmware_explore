@@ -18,9 +18,10 @@ def find_runner() -> Path:
     configured = os.environ.get("PANEL_DRIVE")
     if configured:
         return Path(configured).expanduser().resolve(strict=True)
-    local = paths.ROOT / "out/digikit-target/release/examples/panel_drive"
-    if local.is_file():
-        return local
+    for local in (paths.ROOT / "out/digikit-target/release/dnfw-panel-drive",
+                  paths.ROOT / "out/digikit-target/release/examples/panel_drive"):
+        if local.is_file():
+            return local
     raise SystemExit("Set PANEL_DRIVE to Digikit's built panel_drive executable.")
 
 

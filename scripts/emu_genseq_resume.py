@@ -57,7 +57,7 @@ def load_codec(out):
 
 
 def fixture(bank, out, phase=0, pattern=9, generator=2, length=4, weighted=True,
-            pitch_bias=50, move=75, repeat=25):
+            pitch_bias=50, move=75, repeat=25, hold=0, activity=100):
     codec = load_codec(out)
     tracks_type, kit_type = Track * 16, ct.c_uint8 * KIT_SIZE
     default = Track.in_dll(codec, "gseq_defaults")
@@ -66,7 +66,9 @@ def fixture(bank, out, phase=0, pattern=9, generator=2, length=4, weighted=True,
     c[0], c[2], c[6], c[11], c[19] = 3, pattern - 1, length, generator, 35
     if weighted:
         c[22], c[23], c[24] = pitch_bias, move, repeat
+    c[5] = activity
     c[8] = phase
+    c[7] = hold
     tracks[0].rhythm, tracks[0].melody = 17, 257
     raw = bytearray(bank.read_bytes())
     offset = IMAGE - MRAM_HEADER + KIT_BASE

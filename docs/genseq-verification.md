@@ -3,6 +3,336 @@
 The hardware-tested 0.4.1 baseline is commit `45268db`. The experiments below
 use Digitone II OS 1.11 and run outside that checkpoint.
 
+The owner accepted 0.4.15 as a beta checkpoint on 2026-11-22. The
+[hardware checklist](genseq-beta-hardware-checklist.md) records the exact image
+and pending instrument checks. The extreme synthetic ANC case does not block
+this beta. Hardware confirmation remains pending.
+
+The [0.4.15 capture timing report](genseq-capture-clock-0.4.15.md) documents
+the fix for missed onsets and notes queued before capture is armed. It adds a
+tempo/speed matrix and compares live note/release output against 0.4.14.
+The [0.4.14 performance report](genseq-performance-0.4.14.md) remains the record
+of the original failure and earlier frame-budget measurements. Its occasional
+emulator slot overruns remain a hardware timing check.
+
+## Commit to Pattern in 0.4.14-dev
+
+COMMIT TO PATTERN is the third YES-menu action. Capture collects the selected
+synth track's realized pitches for one complete stock track cycle. It uses
+the existing admission hook after pitch selection and before transpose,
+arp and layering. It does not evaluate the generator from the editor.
+
+Encoder A chooses a pattern and B chooses a synth track. Two YES presses
+confirm replacement, including occupied and in-place destinations. The
+native sequence paste resizes the track and the destination switches to
+GEN SEQ OFF. The result screen offers YES to undo before leaving it. Undo
+restores sequence data, length and GEN SEQ settings together. The normal
+clipboard remains available.
+
+### Verified stock interfaces
+
+| Interface | OS 1.11 address or layout | Use |
+|---|---|---|
+| Project object getter | `0x4018a97a`, address returned in D0 | Find the sequence-view grid. The editor's selection object at `view + 116` is a different object |
+| Sequence view | `app + 0x4414 + 2388 × pattern + 112 + 132 × track` | Resolve the source or destination without changing selection |
+| Object data | Vtable slot `+40`, address returned in D0 | Read the project track and its note/lock pools |
+| Clipboard payload factory | `0x4019bc5e`, hidden result pointer in A0 | Own a private capture buffer |
+| Clipboard manager | `0x4018d6b2`, setter at vtable `+8` | Swap slot 0 temporarily. The public COPY routine at `0x4019b512` also clears undo, so it cannot restore the user's clipboard after paste |
+| Sequence paste | `0x40053728(view, 1)` | Copy and remap the stock sequence and register native paste undo |
+| Sequence undo | `0x40052824(view, 2)` | Restore the destination through the native pool and notification paths |
+| Owner release | `0x401880cc` | Decrement the reference. This destructor does not clear the owner field, so the wrapper consumes and clears both pointers before calling it |
+
+The private payload has 96,672 bytes. The track starts at `+4` and uses
+1,701 bytes. The lock pool starts at `+1705` and uses 24,304 bytes. The note
+pool starts at `+26009` and uses 70,656 bytes. The source track ID is at
+`+96668`.
+
+The note pool has 8,192 six-byte entries, heads at `+0xc000`, next links at
+`+0xd000`, and a free bitmap at `+0x11000`. Each entry stores track, step,
+pitch, velocity, length and microtiming. Both track and step are required.
+An early experiment played the right pitches from RAM but lost the pitch
+overrides after reload because the step byte was zero. The final build
+writes that byte for new notes and for every cloned FILL entry.
+
+New generated trigs use the stock `0x381` flags plus the physical swing bit.
+They have explicit note entries with source default velocity and length,
+zero microtiming and 100% probability. Hidden edits on an empty step must
+not supply velocity, timing, retrig, sound or parameter locks to a generated
+hit. Tests cover removal of this stale metadata while retaining host edits.
+
+SEQ overlays captured pitches on the source template. FILL flattens the
+stock source-step and Euclidean maps, including note chains, per-step data
+and parameter-lock columns, before adding generated hits. GEN clears the
+host sequence and both mappings. Capacity checks run before native paste.
+Conflicting pitches for one stored step show the first offending step and
+leave the destination intact.
+
+### Capture lifetime and startup
+
+The sampler follows stock step, subdivision, SPEED and deadline publications.
+Cycle origins use the stock timestamp modulo 32 bits. Long slow cycles do
+not rely on fitting a whole cycle into a signed deadline interval.
+
+Stock can dispatch the cached first onset before publishing its running
+clock. A capture armed while stopped waits beyond that initial published
+cycle. Otherwise step 1 could be omitted while later steps appeared correct.
+The downbeat regression now captures and repeats all four SHAPE UP notes:
+48, 56, 64 and 72 on steps 1, 5, 9 and 13. GROOVE PAT 22 captures all six
+positions, including step 1. ACT 0 also completes capture through the frame
+clock with no note admission.
+
+STOP, source edits and source replacement cancel unfinished capture. A stock
+track switch can hide the child before its next UI tick. The stock show
+wrapper cancels there too, so the hidden editor cannot keep capturing the
+old track. Completed capture survives STOP. A GUI overlay can attach the
+already loaded project without resetting controls edited in that session.
+
+The capture adds 1,108 bytes of static RAM and 7,216 bytes of code compared
+with the 0.4.13 combined image. One private 96,672-byte clipboard exists
+while a capture is retained. Allocation, mapping, capacity scans and paste
+run on the UI thread. Per-onset sampling and clock tracking use bounded
+work for one selected track. No additional project record or LFO4 storage
+range is used. The schema 3 record remains 400 bytes.
+
+### Automated evidence
+
+The GCC 13.3 focused suite passes **88 tests** across GEN SEQ, Waverider and
+LFO Preview. The commit tests include pool layout, step ownership, cleared
+ghost metadata, probability overrides, capacity, timestamp wrap, interrupted
+cycles, Euclidean mapping, lock columns and silent GEN.
+
+The combined image passes **16 SSI-paced workflow cases** with zero firmware
+fault hits. These exercise real panel events, the stock scheduler and
+rendered OLED frames:
+
+- SEQ and FILL commit and immediate undo, including a stock HARM parameter
+  lock on step 5. Logical note/lock fingerprints and all track bytes return
+  to their pre-paste values. GEN SEQ settings return too.
+- GEN downbeats, WALK, ANC, ACT 0, an in-place overwrite and an A01-to-A02
+  write. Ordinary playback repeats the captured pitch order with GEN SEQ
+  OFF at the destination.
+- STOP and track switching during capture, NO at confirmation, shared
+  PER PATTERN length rejection, and conflicting Euclidean source pitches.
+  Rejected operations preserve the destination and the user clipboard.
+- Eight capture/cancel/re-arm cycles. Both released clipboard pointers are
+  zero each time. The final capture still plays correctly.
+- The GUI attachment case clears the project binding to match installation
+  after stock boot, then captures and pastes through real editor inputs.
+- The stock project flash job writes an emulated eMMC bank. The test reads
+  that bank back and cold-boots **original OS 1.11**, with no GEN SEQ payload.
+  Track bytes, logical notes, locks and length match, and the captured notes
+  repeat on the stock scheduler.
+
+The fixture uses stock setters for PER TRACK and track length. A direct
+poke alone does not publish the header edit to working-state persistence.
+The Euclidean fixtures seed a deterministic stock mapping. These are normal
+SSI playback tests with prepared inputs, not manually stepped evaluations.
+The cold stock run loads only an observer and input thunk into unused RAM.
+The local driver's `ram` step uses the existing debugger loader for those
+pages without changing emulator guest-fault limits.
+
+Reports and 2× frames are under `out/genseq/final-commit/complete-matrix/`.
+The guide includes destination, confirmation and result frames. The tested
+combined firmware is:
+
+`out/genseq/0.4.14-commit/genseq-waverider-lfopreview-0.4.14-dev-persist_DN2_1.11.syx`
+
+SHA-256: `1f9672db4977e86a899e3d3fb213b4310e0c07d07a8d4044de173b251b032c3a`.
+
+Reproduce the build and matrix from the checkout:
+
+```sh
+.venv/bin/python tools/build_panel_drive.py
+
+./tools/with_m68k_gcc13.sh .venv/bin/python scripts/build_genseq.py \
+  --persistence-probe \
+  --waverider-preview-base out/genseq/hardware-test/waverider-lfopreview-base.syx \
+  --out out/genseq/0.4.14-commit
+
+./tools/with_m68k_gcc13.sh .venv/bin/python scripts/emu_genseq_commit.py \
+  out/genseq/0.4.14-commit/genseq-waverider-lfopreview-0.4.14-dev-persist_DN2_1.11.syx \
+  --matrix --out out/genseq/final-commit/complete-matrix
+```
+
+The matrix needs the existing `working-bank.bin` fixture. Use `--bank` to
+choose another copy. The corresponding pytest cases use
+`DNFW_GENSEQ_WORKING_BANK` and the `slow` marker.
+
+### Owner-run instrument check
+
+1. Keep a backup of the project. Prepare a synth track with a recognizable
+   locked GEN phrase and a complete stock track cycle.
+2. Capture it. Commit to another synth track in PER TRACK mode. Confirm
+   that the destination plays ordinary trigs with GEN SEQ OFF.
+3. Repeat with an occupied destination and then in place. Use YES on the
+   result screen to undo. Check trigs, length, locks and GEN SEQ settings.
+4. Check SEQ with a velocity edit, parameter lock, sound lock,
+   condition, microtiming and retrig. Check the documented treatment of
+   silent conditional trigs. Repeat in FILL. Compare FILL with stock Euclidean enabled.
+5. Start capture from STOP with a hit on step 1. Check that the completed
+   capture includes it. Cancel another capture with STOP and a track switch.
+6. Save the committed sequence. Power-cycle the instrument. Check pitches,
+   timing, length and destination MODE OFF. Check the normal clipboard too.
+7. Repeat at the performance's tempo and track SPEED, with the intended arp
+   and layering settings. Pitches are captured before those stock stages.
+
+Hardware acceptance and the separate performance-feature timing checks
+remain owner-run work. No instrument was flashed by these tests.
+
+## Live reload preserves the running clock in 0.4.13-dev
+
+Pattern reload now separates restoring musical values from restarting the
+clock. The UI still builds the replacement phrase outside the interrupt
+mask. At publication, it samples the current runtime and installs the
+prepared bank atomically. The audio path does not replay skipped events
+or generate a second note for the restore operation.
+
+For an active EVT track, finite-to-finite reload retains the advances
+within the current loop, modulo the restored LEN, and applies the restored
+PHASE. It retains the previous-note context, wrap count and chance streams.
+HOLD continues from its running roll state and holds the corresponding
+value from the rebuilt bank. Compatible partial and complete regeneration
+banks survive reload, including when the active bank was bank 1. A revision
+change rejects in-flight calculations. Incompatible banks are prepared
+again outside the critical section and may defer the first swap to a later
+wrap, without moving the phrase clock.
+
+ANC resolves the current stock track position. INF-to-INF reload retains
+the current bounded stream state. A change between finite and INF, or
+between EVT and ANC, initializes the destination clock. EVT starts at
+PHASE and ANC projects stock time. Stopped, inactive and newly enabled
+tracks retain their fresh-start behavior. Clipboard operations and normal
+parameter edits keep their previous initialization rules. The 400-byte
+schema 3 record and its kit ranges are unchanged.
+
+The focused GEN SEQ, Waverider and LFO Preview checks pass 79 tests using
+GCC 13.3. Added host cases cover nonzero PHASE, lengths 1, 6 and 64,
+weighted previous-note selection, HOLD 0/37/100, finite length mapping,
+INF streams and clock-kind changes. They also reject a regeneration draft
+prepared before replacement and preserve compatible partial and complete
+banks through a wrap without a missed REGEN. The dedicated slow pytest regression passes
+weighted WALK with HOLD 37 through real TEMP SAVE and RELOAD.
+
+The combined image passes native playback comparisons for EVT and ANC,
+weighted pitches, HOLD 37 and 100, INF, and live LEN, PHASE and ADV edits.
+Unchanged settings retain the control run's note deadlines, pitches and
+EVT cursor sequence. Changed controls use the documented position mapping
+while deadlines remain unchanged. HOLD 100 retains its displayed slot
+after the history is cleared. The first-note regression still repeats
+59, 58, 58, 58, 57, 57 from its first loop and after STOP/PLAY.
+
+The nine clipboard, TEMP, preset and flash cases pass on the final image.
+The flash test reads back the emulated card bank and boots that exact bank,
+preserving GEN SEQ, sounds, trigs and the neighboring pattern. Twelve live
+MUT-edit/restore cycles also pass across 16 active tracks, REGEN 100 and an
+active Waverider track, with zero fault-reporter or software-reset hits.
+The editor responds and STOP ends note emission in each case.
+
+All five guide pages were recaptured at 2×. The ANC page test visits every
+region, checks expected pitches and retains the redraw cap. It requests
+five animation redraws over 255 UI ticks. Reports, traces, captures and
+the combined firmware are in `out/genseq/0.4.13-verified/`.
+
+The original panel driver falsely rejected an initial 0.4.13 flash bank at
+instruction count 620,999,999. An interrupt entered `0x40001e7c` without
+executing an instruction, so the single-instruction remainder reported no
+instruction-count progress. `tools/build_panel_drive.py` builds a local
+driver with at most eight retries for such transitions. The emulator core,
+instruction target and firmware fault checks are unchanged. The same bank
+then boots and restores all checked data, with one instruction-free
+transition logged. That diagnostic is retained under
+`out/genseq/0.4.13-final/cold-driver-check/`. The verified image also passes
+the full flash and cold-boot test. This is separate from the unreproduced hardware reboot.
+The shared runner finder prefers the locally built driver when present.
+
+```sh
+.venv/bin/python tools/build_panel_drive.py
+./tools/with_m68k_gcc13.sh .venv/bin/python scripts/build_genseq.py \
+  --persistence-probe \
+  --waverider-preview-base out/genseq/hardware-test/waverider-lfopreview-base.syx \
+  --out out/genseq/0.4.13-final
+.venv/bin/python scripts/emu_genseq_reload_phase.py \
+  out/genseq/0.4.13-verified/genseq-waverider-lfopreview-0.4.13-dev-persist_DN2_1.11.syx \
+  out/genseq/0.4.8-combined/project/working-bank.bin \
+  --out out/genseq/0.4.13-verified/reload-alignment --tail 1600000000
+DNFW_GENSEQ_WORKING_BANK=out/genseq/0.4.8-combined/project/working-bank.bin \
+  ./tools/with_m68k_gcc13.sh .venv/bin/python -m pytest \
+  test/test_genseq.py::test_live_temp_reload_keeps_weighted_hold_phase -q
+```
+
+For the owner-run instrument check, save GEN/GROOVE 22/WALK with LEN 6,
+EVT, PHASE 0 and MUT/HOLD/REGEN at zero. Reload between the fifth and sixth
+notes and listen against the metronome. Raise MUT, then reload between
+phrase boundaries and check that the base values return without moving
+the phrase. Repeat with HOLD, ANC, mixed track speeds and several active
+tracks. Check a stopped reload and STOP/PLAY for the original first-note
+behavior. The owner performs any flashing and hardware timing checks.
+
+## Live TEMP restore changes EVT phrase alignment in 0.4.12
+
+The 0.4.12 baseline is committed at `d74ebf9`. The owner reports that
+restoring during GEN playback shifts the melody relative to the beat.
+The combined image reproduces this with unchanged saved controls.
+
+`gseq_reload_pattern` calls `replace_pattern` after reading the saved kit.
+That function publishes every track with phrase rebuilding and context
+reset enabled. `publish` rebuilds the saved phrase, resets its mutation
+and regeneration state, and calls `gseq_phrase_restart`.
+`gseq_phrase_phase` then assigns PHASE to the cursor and clears the read
+count. There is no corresponding stock transport restart. In EVT, the
+next admitted note reads that cursor. This moves the phrase's starting
+point to wherever playback happens to be when restore completes.
+
+The test uses GEN, GROOVE 22, WALK, LEN 6, PHASE 0, and MUT, HOLD and
+REGEN at zero. Pitch mapping is neutral to isolate phrase position from
+previous-note weighting. It boots from reset and uses real TEMP SAVE and
+RELOAD panel gestures during SSI-paced playback. Each reload run has a
+control with the same instruction budget and no reload gesture. Other
+tracks are silenced in the fixture. Playback runs the real evaluator.
+
+| ADV | Delay before gesture | Onsets per run | Scheduled deadlines | Phrase result |
+|---|---:|---:|---|---|
+| EVT | 130 million instructions | 66 | Identical to control | The fifth onset reads slot 1 instead of slot 5. Note 61 replaces note 59. |
+| EVT | 235 million instructions | 68 | Identical to control | The sixth onset reads slot 1 instead of slot 6. Note 61 replaces note 60. |
+| ANC | 130 million instructions | 66 | Identical to control | The complete pitch sequence matches control. |
+| ANC | 235 million instructions | 68 | Identical to control | The complete pitch sequence matches control. |
+
+Slots in the table count from one. The EVT function-entry samples show
+cursor 0 and read count 0 immediately after rebuilding. Every emitted
+onset has a corresponding admission deadline. The largest difference in
+the instruction count of an outgoing note frame was seven instructions
+for EVT and zero for ANC. All eight runs complete without firmware faults.
+The long runs include a stock track wrap.
+
+ANC invalidates its cached projection when rebuilding, then resolves the
+current region from stock step, subdivision and deadline state. This
+keeps its timeline aligned in the test. Restoring different parameters,
+evolved values or previous-note weighting can still change pitches.
+
+This is a consequence of the current reload implementation. It is not a
+requirement of saving controls. A performance-oriented follow-up should
+separate restoring musical state from restarting the playback cursor.
+Preserving the running EVT position when LEN and ADV are unchanged would
+avoid this particular shift. Changed LEN, PHASE or ADV needs an explicit
+position-mapping policy. A quantized restore is another possible policy,
+but it would defer the effect of the key press. This investigation makes
+no firmware behavior change.
+
+In 0.4.12, restoring on an EVT phrase boundary retains its alignment.
+LEN counts phrase advances, not beats. HOLD and the admitted rhythm affect
+when that boundary occurs. The 0.4.13 behavior above removes this requirement
+when the clock kind stays the same.
+
+The harness is `scripts/emu_genseq_reload_phase.py`. Reports and raw traces
+are in `out/genseq/0.4.12-combined/reload-phase-final/`.
+
+```sh
+.venv/bin/python scripts/emu_genseq_reload_phase.py \
+  out/genseq/0.4.12-combined/genseq-waverider-lfopreview-0.4.12-dev-persist_DN2_1.11.syx \
+  out/genseq/0.4.8-combined/project/working-bank.bin \
+  --out out/genseq/reload-phase-repeat
+```
+
 ## Track-preset clipboard in 0.4.12-dev
 
 The owner reported that TRACK + COPY and TRACK + PASTE retained the

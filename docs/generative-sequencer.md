@@ -13,15 +13,18 @@ The prototype section describes the installed controls.
 Open Euclidean with FUNC + SEQ. Press it again for GEN SEQ. Move through
 TRIG, PHRASE, GEN, PITCH and MELODY with UP and DOWN. The stock drawer
 shows the page name during navigation and the full parameter name during
-an edit. The short label below the control shows the edited value. The
-normal pattern header and control label return when the readout expires.
+an edit. A short control label shows the edited value. Boxed choices keep
+their label and value visible. The normal pattern header and control label
+return when the readout expires. Compact rows surround a live visualization.
 
 Use A through F on TRIG for MODE, BANK, PAT, MOD, VAR and ACT. The default
 MOD is NONE, so VAR shows a dash. Turn D to select SHIFT, FACTOR or
 NEIGHBOR, then turn E to set VAR.
 
-All five pages have editable controls. On PHRASE, LEN counts admitted note
-events. PHASE selects the first slot, HOLD can reuse a value, MUT can replace
+All five pages have editable controls. On PHRASE, ADV selects EVT or ANC.
+In EVT, LEN counts admitted phrase advances. In ANC, LEN divides the stock
+track cycle into regions, including rests. PHASE selects the first slot,
+HOLD can reuse a value, MUT can replace
 a revisited slot, and REGEN can switch to a new loop at a wrap. Set LEN to INF
 for a continuous RANDOM or WALK stream. SHAPE requires a finite loop. A dash
 marks a control that the selected mode makes inactive.
@@ -30,9 +33,11 @@ On GEN, use A to choose RANDOM, WALK, or SHAPE. On PITCH, C/D set the
 inclusive note range and A/B set or inherit the root and scale. PITCH BIAS and
 the four MELODY controls affect the pitch distribution.
 
-YES opens the actions menu. Use UP/DOWN and YES to choose NEW RHYTHM or NEW
-PHRASE. NO closes the menu. FUNC + SEQ or NO from the editor returns to
-Euclidean. COMMIT TO PATTERN remains part of the design below.
+YES opens the actions menu. Use UP/DOWN and YES to choose NEW RHYTHM, NEW
+PHRASE or COMMIT TO PATTERN. Commit captures one complete stock track cycle,
+then pastes ordinary trigs into the chosen pattern and synth track with
+GEN SEQ OFF. The result screen offers immediate Undo. NO closes the menu.
+FUNC + SEQ or NO from the editor returns to Euclidean.
 
 The synth path picks a pitch after stock accepts the onset and before stock
 copies it to layers or the arp. A stock note prepared before SEQ was armed
@@ -46,8 +51,12 @@ reservations before the conditions run. GEN builds its own inline synth
 record on the existing track clock. The stock scheduler queues and releases
 it.
 
-The build keeps its settings in RAM. The standalone schema 3 codec follows
-the 400-byte layout below. Project persistence remains unwired.
+Builds marked `-persist` save controls and seeds through stock project and
+working-state paths. The schema 3 codec follows the 400-byte layout below.
+Other builds keep settings in RAM. Since 0.4.13, live pattern reload retains
+the running phrase clock when its kind is unchanged. The user guide defines
+the mapping for changed LEN, PHASE, ADV and INF. Clipboard operations keep
+their normal phrase initialization behavior.
 
 ### Interactive emulator
 
@@ -57,7 +66,7 @@ build into guest memory.
 
 ```sh
 ../digikit-up/.venv/bin/python scripts/gui_genseq.py \
-  out/genseq/genseq-0.4.1_DN2_1.11.syx
+  out/genseq/0.4.14-commit/genseq-waverider-lfopreview-0.4.14-dev-persist_DN2_1.11.syx
 ```
 
 Click FUNC to latch it. Click the AMP key once for Euclidean and again
@@ -570,8 +579,8 @@ before stock transpose, arp, and layering. Preserve timing, conditions,
 locks, and retrigs. A trig that stayed silent keeps its original pitch.
 Inherited pitches follow the destination's stock sequence-paste behavior.
 
-Then add FILL and GEN. FILL writes representable generated hits alongside
-the programmed trigs. GEN replaces the destination rhythm and disables its
+FILL and GEN use the same capture workflow. FILL writes representable generated hits alongside
+the programmed trigs. Flatten Euclidean and source-step mappings before adding FILL hits to the normal grid. GEN replaces the destination rhythm and disables its
 Euclidean processing. Verify the whole capture against the stock step and
 note format, including source timing, lock capacity, and conflicting pitches
 mapped to the same source step. Show the first unrepresentable step before
@@ -579,7 +588,7 @@ writing any data.
 
 Replace the sequence, resize the track, and set the destination GEN SEQ mode
 to OFF as one undoable edit. Undo restores the prior notes, locks, length,
-and mode. Cancellation or a failed write leaves the source and destination
+and mode. The result screen offers YES to run stock sequence undo before leaving the screen. Later operations use stock undo eligibility. Cancellation or a failed write leaves the source and destination
 intact. [Stock paste verification](genseq-verification.md#sequence-paste-reference)
 
 ## Project persistence
@@ -725,8 +734,9 @@ above are a subset of those markers.
 [Project layout](../csrc/include/dn2_111.h) · [Project export test](../scripts/emu_project_save_read.py)
 
 The measured paths establish capacity and stock decoding for the probed kit.
-Project reload and cold boot still need round-trip verification. Verify both
-raw and compressed backups. Include the working-state writer and partial saves.
+Durability checks cover project reload, cold boot, raw and compressed backups,
+the working-state writer and partial saves. See the linked verification note
+for the measured coverage of each build.
 
 Stock project serialization starts at `0x400e1494`. Stock project loading
 starts at `0x400e1782`. Write the extension after stock serialization.

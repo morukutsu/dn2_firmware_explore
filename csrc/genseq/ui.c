@@ -197,11 +197,11 @@ void gseq_page_title(void *view, enum gseq_page page)
 
 void gseq_draw_actions(void *view, void *canvas, enum gseq_action action)
 {
-    static const char *const names[] = {"NEW RHYTHM", "NEW PHRASE"};
+    static const char *const names[] = {"NEW RHYTHM", "NEW PHRASE", "COMMIT TO PATTERN"};
     RECT(canvas, 15, 0, 127, 53, 0);
     LEVEL(view, canvas, 0);
     for (unsigned i = 0; i < ACTION_COUNT; ++i) {
-        int y = 35 - 15 * i;
+        int y = 38 - 14 * i;
         if (action == i)
             OUTLINE(canvas, 24, y - 3, 120, y + 10, 1);
         TEXT(canvas, VALUE_FONT, 72, y, CENTRED, "%s", names[i]);
@@ -357,4 +357,34 @@ void gseq_draw_controls(void *view, void *canvas, enum gseq_page page,
             draw_cell(canvas, cell, x, i < 4, track, edited == i + 1);
     }
     draw_plot(canvas, page, plot);
+}
+
+void gseq_draw_capture(void *view, void *canvas, const struct gseq_capture *capture,
+                        unsigned pattern, unsigned track, bool confirm, const char *message, unsigned trigs, bool undo)
+{
+    RECT(canvas, 15, 0, 127, 53, 0);
+    LEVEL(view, canvas, 0);
+    TEXT(canvas, LABEL_FONT, 73, 43, CENTRED, "COMMIT TO PATTERN");
+    if (message) {
+        TEXT(canvas, LABEL_FONT, 73, 26, CENTRED, "%s", message);
+        if (undo)
+            TEXT(canvas, LABEL_FONT, 73, 8, CENTRED, "YES: UNDO  NO: BACK");
+    } else if (capture->state == CAP_READY) {
+        TEXT(canvas, LABEL_FONT, 73, 32, CENTRED, "%u TRIGS / %u STEPS", trigs, capture->length);
+        TEXT(canvas, VALUE_FONT, 73, 18, CENTRED, "%c%02u  TRACK %u", 'A' + pattern / 16,
+             pattern % 16 + 1, track + 1);
+        TEXT(canvas, LABEL_FONT, 73, 4, CENTRED, "%s", confirm ? "YES: OVERWRITE  NO: BACK" : "A: PAT  B: TRACK  YES: PASTE");
+    } else if (capture->state == CAP_ERROR) {
+        if (capture->error_step < 128)
+            TEXT(canvas, LABEL_FONT, 73, 26, CENTRED, "STEP %u: %s", capture->error_step + 1,
+                 capture->error == CAP_CONFLICT ? "MULTIPLE PITCHES" : "POOL FULL");
+        else
+            TEXT(canvas, LABEL_FONT, 73, 26, CENTRED, "%s",
+                 capture->error == CAP_CHANGED ? "Capture changed. Retry." :
+                 capture->error == CAP_FULL ? "Not enough note memory" :
+                 capture->error == CAP_CONFLICT ? "Conflicting pitches" : "Unsupported track clock");
+    } else {
+        TEXT(canvas, LABEL_FONT, 73, 26, CENTRED, "Capturing next full cycle");
+        TEXT(canvas, LABEL_FONT, 73, 10, CENTRED, "PLAY TO CAPTURE / NO: CANCEL");
+    }
 }
