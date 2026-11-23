@@ -1,8 +1,8 @@
 # GEN SEQ
 
-User guide for GEN SEQ 0.4.15-dev on Digitone II OS 1.11.
+User guide for GEN SEQ 0.4.17-dev on Digitone II OS 1.11.
 
-This version is the beta checkpoint. Hardware confirmation is pending. Use the
+This version follows the 0.4.15 beta checkpoint. Hardware confirmation is pending. Use the
 [hardware checklist](genseq-beta-hardware-checklist.md) for the next instrument session.
 
 GEN SEQ makes melodies on synth tracks. Use SEQ to keep the rhythm you programmed, FILL to add notes in its gaps, or GEN to generate the rhythm as well. Each track has its own settings for each pattern.
@@ -133,6 +133,20 @@ With a finite EVT phrase and MUT, HOLD and REGEN at zero, MELODY context restart
 ## Projects and the clipboard
 
 GEN SEQ stores controls and rhythm and melody seeds for every synth track in all 128 patterns. Explicit project saves and the stock working-state save include them. Reopening a project or booting the instrument rebuilds each phrase from its saved controls and seeds. The saved data does not contain evolved phrase values, recent-note history or a playback cursor.
+
+### Copy GEN SEQ settings to another track
+
+1. Open GEN SEQ on the source synth track. Press **[YES]** to open the actions menu.
+2. Use **[UP]** or **[DOWN]** to select **COPY SETTINGS**. Press **[YES]**.
+3. Select the destination synth track and open GEN SEQ there.
+4. Press **[YES]**, select **PASTE SETTINGS**, then press **[YES]** again.
+
+Paste replaces all five pages of GEN SEQ settings, including MODE and both
+seeds. The destination builds its own phrase from those settings. It keeps
+its sound, trigs, parameter locks, track length and speed. Settings that use
+the track's stock root or scale follow the destination. The GEN SEQ clipboard
+holds one setup and supports repeated pastes until you copy another setup or
+restart the instrument. Stock page and track copy retain their own behavior.
 
 ### TEMP SAVE and reload during performance
 

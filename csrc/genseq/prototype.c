@@ -34,6 +34,8 @@ typedef int (*StockSnap)(const void *, int, int, int, int, void *);
 static uint32_t encoder_state[232 / 4];
 static unsigned encoder_pattern, encoder_track;
 static struct gseq_track settings[GSEQ_PATTERNS][GSEQ_TRACKS];
+static struct gseq_track settings_clipboard;
+static bool settings_clipboard_ready;
 #ifdef GSEQ_PERSISTENCE_PROBE
 static volatile unsigned settings_revision[GSEQ_PATTERNS];
 #endif
@@ -714,7 +716,7 @@ static void publish(unsigned pattern, unsigned track, const struct gseq_track *c
     }
     const uint8_t *copy = PATTERN_COPY;
     if ((schedule & 3u) && pattern_index(copy) == pattern &&
-        (field == TRIG_MODE || pitch_changed))
+        (field == TRIG_MODE || pitch_changed || !(schedules[pattern][track] & 3u)))
         prepare_pitch(cfg, copy, pattern, track, revision);
 
     /* The UI prepares a new base loop before the short publication. The
@@ -815,6 +817,21 @@ static void save_working_pattern(unsigned pattern)
         save_pattern((uint8_t *)DN2_IMAGE + DN2_IMAGE_KITS + pattern * GSEQ_KIT_BYTES, pattern, epoch);
 }
 
+void gseq_clear_midi_kit_reserved(void *dest, int value, unsigned bytes)
+{
+    /* Stock MIDI-kit serialization clears +0x1748. On an already packed
+     * working kit those four bytes are track 2's seeds, covered by the CRC.
+     * Full saves pack their record after the stock converter returns. */
+    enum { SEED_OFFSET = 0x1748 };
+    const uintptr_t first = DN2_IMAGE + DN2_IMAGE_KITS + SEED_OFFSET;
+    uintptr_t offset = (uintptr_t)dest - first;
+    if (value == 0 && bytes == 4 && offset < GSEQ_PATTERNS * GSEQ_KIT_BYTES &&
+        offset % GSEQ_KIT_BYTES == 0 &&
+        WORD((uint8_t *)dest - SEED_OFFSET, 0x18) == 0x47534551u)
+        return;
+    FILL_BYTES(dest, value, bytes);
+}
+
 void gseq_new_project(void *project)
 {
     ((void (*)(void *))0x400e7940u)(project);
@@ -879,6 +896,18 @@ static void publish_edit(unsigned pattern, unsigned track, const struct gseq_tra
 #endif
 }
 
+static void replace_track(unsigned pattern, unsigned track, const struct gseq_track *cfg)
+{
+    const struct gseq_track *value = cfg->melody_seed ? cfg : &gseq_defaults;
+    publish_edit(pattern, track, value, true, true, CONTROL_COUNT);
+    uint16_t status = gseq_interrupt_mask();
+    if (pattern_index(PATTERN_COPY) == pattern) {
+        struct live_track *history = live_track(pattern, track);
+        history->count = history->head = 0;
+    }
+    gseq_interrupt_restore(status);
+}
+
 #ifdef GSEQ_PERSISTENCE_PROBE
 /* Stock owns the clipboard, undo eligibility and destination selection. These
  * snapshots travel with successful stock operations. Nothing in the audio
@@ -932,18 +961,6 @@ static unsigned sound_id(const void *view)
     if (within >= DN2_SOUND_STRIDE * GSEQ_TRACKS || within % DN2_SOUND_STRIDE)
         return GSEQ_PATTERNS * GSEQ_TRACKS;
     return pattern * GSEQ_TRACKS + within / DN2_SOUND_STRIDE;
-}
-
-static void replace_track(unsigned pattern, unsigned track, const struct gseq_track *cfg)
-{
-    const struct gseq_track *value = cfg->melody_seed ? cfg : &gseq_defaults;
-    publish_edit(pattern, track, value, true, true, CONTROL_COUNT);
-    uint16_t status = gseq_interrupt_mask();
-    if (pattern_index(PATTERN_COPY) == pattern) {
-        struct live_track *history = live_track(pattern, track);
-        history->count = history->head = 0;
-    }
-    gseq_interrupt_restore(status);
 }
 
 static void copy_track(struct track_edits *edits, unsigned id)
@@ -1331,6 +1348,21 @@ static void run_action(void *view)
         return;
     if (editor_action == ACTION_COMMIT) {
         capture_arm(view, pattern, track);
+        return;
+    }
+    if (editor_action == ACTION_COPY) {
+        if (cfg->melody_seed)
+            COPY(&settings_clipboard, cfg, sizeof settings_clipboard);
+        else
+            init(&settings_clipboard, pattern, track);
+        settings_clipboard_ready = true;
+        gseq_settings_message(view, "COPY GEN SEQ");
+        return;
+    }
+    if (editor_action == ACTION_PASTE) {
+        if (settings_clipboard_ready)
+            replace_track(pattern, track, &settings_clipboard);
+        gseq_settings_message(view, settings_clipboard_ready ? "PASTE GEN SEQ" : "GEN SEQ CLIP EMPTY");
         return;
     }
     struct gseq_track next;

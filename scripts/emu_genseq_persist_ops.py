@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import ctypes as ct
 from dataclasses import dataclass
 import json
 from pathlib import Path
 import struct
+from zlib import crc32
 
 from dnfw import seqframes
 from build_genseq import ROOT, STOCK
@@ -72,12 +74,80 @@ def trigs(track):
     return [i // 2 + 1 for i in range(0, len(track), 2) if track[i + 1] & 1]
 
 
+def canary_bank(bank, out):
+    """Populate A01 and A02 with different valid settings on every track."""
+    from emu_genseq_resume import Track, load_codec
+
+    out.mkdir(parents=True, exist_ok=True)
+    codec = load_codec(out)
+    track_array, kit_array = Track * TRACKS, ct.c_uint8 * KIT_SIZE
+    defaults = Track.in_dll(codec, 'gseq_defaults')
+    raw = bytearray(bank.read_bytes())
+    for pattern in range(2):
+        tracks = track_array(*[defaults] * TRACKS)
+        for index, track in enumerate(tracks):
+            tag = TRACKS * pattern + index
+            c = track.control
+            c[0], c[1], c[2], c[5] = 1 + index % 3, index % 3, tag, 16 + tag
+            c[6], c[8], c[9], c[10] = 7 + index, index, 23 + tag, 31 + tag
+            c[13], c[20], c[21], c[22], c[23] = tag - 20, 40 + index, 72 + index, 17 + tag, -1 - tag
+            c[27] = index % 2
+            track.rhythm = 0x2181 + tag * 0x103
+            track.melody = 0x9143 + tag * 0x205
+        at = 0x110 + KIT_BASE + pattern * KIT_SIZE
+        kit = kit_array.from_buffer_copy(raw[at:at + KIT_SIZE])
+        assert codec.gseq_save(kit, tracks, 1)
+        raw[at:at + KIT_SIZE] = bytes(kit)
+    path = out / 'canary-bank.bin'
+    path.write_bytes(raw)
+    return path
+
+
+def check_canary(pattern, label):
+    record = pattern.record()
+    if pattern.configured():
+        assert record[:6] == b'GSEQ\x03\x01', (label, 'header')
+        assert int.from_bytes(record[8:12]) == crc32(record[12:]), (label, 'checksum')
+    else:
+        assert record == bytes(400), (label, 'cleared record')
+
+
+def check_fixture(bank, pattern, data):
+    with bank.open('rb') as f:
+        f.seek(0x110 + KIT_BASE + pattern * KIT_SIZE)
+        kit = f.read(KIT_SIZE)
+    expected = b''.join(kit[offset:offset + size] for offset, size in SPANS)
+    assert data.record() == expected, (pattern, 'cold boot changed the canary')
+    configs = data.configured()
+    assert len(configs) == len(set(configs.values())) == TRACKS, (pattern, 'missing or duplicate canary')
+    for track, cfg in configs.items():
+        start = 16 + 24 * track
+        assert cfg[28:32] == expected[start + 20:start + 24], (pattern, track + 1, 'seed decode')
+
+
+def compare_canary(before, after, label, except_track=None):
+    check_canary(after, label)
+    if except_track is None:
+        assert after.record() == before.record(), (label, 'stored record changed')
+        assert after.configs == before.configs, (label, 'live settings changed')
+        return
+    a, b = before.record(), after.record()
+    for track in range(TRACKS):
+        if track == except_track:
+            continue
+        start = 16 + 24 * track
+        mask = 1 << (15 - track)
+        assert a[start:start + 24] == b[start:start + 24], (label, 'stored track changed', track + 1)
+        assert (int.from_bytes(a[12:14]) ^ int.from_bytes(b[12:14])) & mask == 0, (label, 'ADV changed', track + 1)
+        assert before.config(track) == after.config(track), (label, 'live track changed', track + 1)
+
+
 def drive(image, bank, out, panel, **extra):
     return playback.run(image, editor_turns(image, panel), out, runner=panel_drive(), base=STOCK,
                         card_extents=((WORKING_BANK, bank),), watch=(playback.FAULT_DN2_111,), **extra)
 
 
-def run_panel(image, bank, out, settings, case, lfo4=True):
+def run_panel(image, bank, out, settings, case, lfo4=True, canary=False):
     def snap(label, pattern=0):
         return snapshot(label, pattern, settings)
 
@@ -127,6 +197,9 @@ def run_panel(image, bank, out, settings, case, lfo4=True):
         panel = [*snap('before'), *LOAD_PRESET, *snap('after')]
     if playing:
         panel += ['wait:180M', 'tap:21', 'wait:120M']
+    if canary:
+        panel = [*snap('canary_a01'), *snap('canary_a02', 1), *panel,
+                 *snap('canary_end_a01'), *snap('canary_end_a02', 1)]
     result = drive(image, bank, out, [*BOOT, *panel],
                    capture=(f'{playback.EXCHANGE_DN2_111:#x}:1:48',) if playing else ())
     if playing:
@@ -134,6 +207,29 @@ def run_panel(image, bank, out, settings, case, lfo4=True):
         assert any(markers['source']['icount'] < event.icount < markers['undo_clear']['icount']
                    for event in seqframes.note_ons(seqframes.events(result['captures']))), 'no playback events'
     seen = snapshots(result['results'])
+    if canary:
+        for name, value in seen.items():
+            check_canary(value, name)
+        for pattern in range(2):
+            check_fixture(bank, pattern, seen[f'canary_a0{pattern+1}'])
+        changed_pattern = target if case in ('track', 'pattern') or preset_track else 0
+        neighbor = 1 - changed_pattern
+        neighbor_before = seen['source'] if changed_pattern else seen['canary_a02']
+        compare_canary(neighbor_before, seen[f'canary_end_a0{neighbor+1}'], 'neighbor')
+        if case == 'preset':
+            compare_canary(seen['before'], seen['after'], 'preset replacement')
+        elif case == 'temporary':
+            for name in ('saved', 'changed', 'reload'):
+                compare_canary(seen['canary_a01'], seen[name], name, except_track=0)
+            compare_canary(seen['saved'], seen['reload'], 'TEMP restore')
+        else:
+            for name in ('undo_paste', 'undo_clear'):
+                compare_canary(seen['before'], seen[name], name)
+            if case == 'pattern':
+                compare_canary(seen['source'], seen['paste'], 'pattern paste')
+            else:
+                for name in ('paste', 'clear'):
+                    compare_canary(seen['before'], seen[name], name, except_track=1)
     if case in ('track', 'pattern') or preset_track:
         before, paste, undo_paste, cleared, undo_clear = (seen[name] for name in
             ('before', 'paste', 'undo_paste', 'clear', 'undo_clear'))
@@ -143,7 +239,7 @@ def run_panel(image, bank, out, settings, case, lfo4=True):
             assert trigs(before.trigs[0]) != trigs(before.trigs[1])
             if case == 'track':
                 assert trigs(paste.trigs[1]) == trigs(before.trigs[0]) and not trigs(cleared.trigs[1])
-                assert all(p.sound(1) == before.sound(1) for p in seen.values())
+                assert all(p.sound(1) == before.sound(1) for p in (paste, undo_paste, cleared, undo_clear))
             else:
                 assert all(p.trigs == before.trigs for p in (paste, undo_paste, cleared, undo_clear))
                 assert paste.sound(1) == source.sound(source_track)
@@ -199,11 +295,19 @@ def run_flush(image, bank, out, settings):
     code, buffer, size, sector = 0x46f1ff00, 0x47200000, 0xc4b200, 0x48000
     flash, read, selector = 0x400f1e26, 0x400f166a, 0x40295b08
     # A test-only guest call. The inactive bank is B for the supplied fixture.
-    thunk = struct.pack('>HI', 0x4eb9, flash)
+    # The stock kit mirror can serialize directly into the working image.
+    # Set up track 2 below, since its seeds occupy the four bytes cleared
+    # by the MIDI-kit converter. Compare the full kit after the flash job.
+    working_kit = IMAGE + KIT_BASE
+    live_kit = PROJECT + 0xef371c
+    thunk = b''.join(struct.pack('>HI', 0x2f3c, arg) for arg in (0, live_kit, working_kit))
+    thunk += struct.pack('>HIHH', 0x4eb9, 0x400dde44, 0x4fef, 12)
+    thunk += struct.pack('>HI', 0x4eb9, flash)
     thunk += b''.join(struct.pack('>HI', 0x2f3c, arg) for arg in (buffer, size, sector))
     thunk += struct.pack('>HIHHH', 0x4eb9, read, 0x4fef, 12, 0x4e75)
     panel = [*BOOT, *snapshot('before', 0, settings), *snapshot('neighbor', 1, settings),
-             *SHORTCUT, *SHORTCUT, 'edit:3:10', 'wait:40M',
+             *SHORTCUT, *SHORTCUT, 'edit:3:10', 'wait:40M', 'tap:12', 'tap:1', 'wait:30M',
+             *select(2), *SHORTCUT, *SHORTCUT, 'edit:3:10', 'wait:40M',
              *snapshot('edited', 0, settings), f'poke:{code:#x}:{thunk.hex()}',
              f'poke:{selector:#x}:00000001', 'send:00', f'peek:{buffer:#x}:{size}']
     result = drive(image, bank, out / 'write', panel, guest_call=(0x4002e464, code),
@@ -217,7 +321,10 @@ def run_flush(image, bank, out, settings):
     readback = bytes.fromhex(rows[-1]['hex'])
     assert readback[:4] == b'COKi' and len(readback) == size
     image_header = 0x110
-    assert readback[image_header + KIT_BASE:image_header + KIT_BASE + KIT_SIZE] == observed['edited'].kit
+    before_flush = observed['edited']
+    assert any(before_flush.record()[60:64]), 'track 2 seeds must exercise the stock clear'
+    expected = readback[image_header + KIT_BASE:image_header + KIT_BASE + KIT_SIZE]
+    assert Pattern(b'', (b'', b''), expected).record() == before_flush.record()
     flashed = out / 'flushed-bank.bin'
     flashed.write_bytes(readback)
     cold = playback.run(image, [*BOOT, *snapshot('cold', 0, settings), *snapshot('neighbor', 1, settings)],
@@ -225,10 +332,45 @@ def run_flush(image, bank, out, settings):
                         card_extents=((sector, flashed),), watch=(playback.FAULT_DN2_111,))
     boot = snapshots(cold['results'])
     assert boot['cold'].configs == observed['edited'].configs
-    assert boot['cold'].kit == observed['edited'].kit and boot['cold'].trigs == observed['edited'].trigs
+    assert boot['cold'].kit == expected and boot['cold'].trigs == before_flush.trigs
     assert boot['neighbor'].configs == observed['neighbor'].configs
     return {'stock_flash_and_readback': True, 'cold_boot_restored_unsaved_edit': True,
             'kit_and_stock_trigs_preserved': True}
+
+
+def run_canary_stock(image, bank, out, settings):
+    """Exercise stock edits that leave both GEN SEQ records unchanged."""
+    def pair(label):
+        return [*snapshot(f'{label}_a01', 0, settings), *snapshot(f'{label}_a02', 1, settings)]
+
+    panel = [*BOOT, *pair('before'),
+             'tap:19', 'tap:29', 'tap:19', 'wait:60M', *pair('trig_edit'),
+             'tap:4', 'wait:40M', *(['turn:1:-120', 'wait:15M'] * 8), *pair('amp_low'),
+             *(['turn:1:120', 'wait:15M'] * 8), *pair('amp_edit'),
+             'press:4', 'wait:10M', 'tap:19', 'release:4', 'wait:30M',
+             *select(2), 'tap:4', 'wait:40M',
+             'press:4', 'wait:10M', 'tap:21', 'release:4', 'wait:50M', *pair('page_paste'),
+             'press:4', 'wait:10M', 'tap:20', 'release:4', 'wait:50M', *pair('page_clear'),
+             'press:23', 'wait:10M', 'tap:26', 'release:23', 'wait:100M', *pair('switch'),
+             'tap:20', 'wait:285M', 'tap:21', 'wait:60M', *pair('play'),
+             *SAVE_AS, *pair('project_save')]
+    result = drive(image, bank, out, panel,
+                   capture=(f'{playback.EXCHANGE_DN2_111:#x}:1:48', f'{SERIALISE:#x}:0:4'))
+    seen = snapshots(result['results'])
+    for pattern in range(2):
+        check_fixture(bank, pattern, seen[f'before_a0{pattern+1}'])
+    for label, value in seen.items():
+        compare_canary(seen[f'before_{label[-3:]}'], value, label)
+    assert seen['before_a01'].trigs != seen['trig_edit_a01'].trigs
+    assert seen['amp_low_a01'].sound(0) != seen['amp_edit_a01'].sound(0)
+    assert seen['amp_edit_a01'].sound(1) != seen['page_paste_a01'].sound(1)
+    assert seen['page_paste_a01'].sound(1) != seen['page_clear_a01'].sound(1)
+    assert seqframes.note_ons(seqframes.events(
+        row for row in result['captures'] if row['pc'] == hex(playback.EXCHANGE_DN2_111)))
+    save_start = frames(result)['play_a02']['icount']
+    assert any(row['pc'] == hex(SERIALISE) and row['icount'] > save_start
+               for row in result['captures']), 'SAVE AS did not call the project serializer'
+    return {'protected_operations': len(seen) // 2 - 1, 'both_patterns_unchanged': True}
 
 
 def main():
@@ -238,16 +380,31 @@ def main():
     parser.add_argument('--out', type=Path, default=ROOT / 'out/genseq/persistence-ops')
     cases = ('track', 'track-preset', 'track-preset-pattern', 'track-preset-playing', 'track-preset-empty',
              'pattern', 'temporary', 'preset', 'flush')
-    parser.add_argument('--case', choices=cases)
+    parser.add_argument('--case', choices=(*cases, 'stock-edits'))
+    parser.add_argument('--canary', action='store_true',
+                        help='seed two patterns with distinct settings on every track')
     parser.add_argument('--without-lfo4', action='store_true', help='test the combined build without LFO4')
     args = parser.parse_args()
+    if args.canary and args.case == 'track-preset-empty':
+        parser.error('the empty-source case requires an unconfigured source track')
+    if not args.canary and args.case == 'stock-edits':
+        parser.error('stock-edits requires --canary')
     settings = json.loads(args.image.with_name('symbols.json').read_text())['settings']
+    bank = canary_bank(args.bank, args.out) if args.canary else args.bank
+    if args.canary:
+        cases = (*(case for case in cases if case != 'track-preset-empty'), 'stock-edits')
     cases = (args.case,) if args.case else cases
+
+    def run(case):
+        out = args.out / case
+        if case == 'flush':
+            return run_flush(args.image, bank, out, settings)
+        if case == 'stock-edits':
+            return run_canary_stock(args.image, bank, out, settings)
+        return run_panel(args.image, bank, out, settings, case, not args.without_lfo4, args.canary)
+
     with ThreadPoolExecutor(max_workers=min(4, len(cases))) as pool:
-        jobs = {case: pool.submit(run_panel, args.image, args.bank, args.out / case, settings, case,
-                                 not args.without_lfo4)
-                if case != 'flush' else pool.submit(run_flush, args.image, args.bank, args.out / case, settings)
-                for case in cases}
+        jobs = {case: pool.submit(run, case) for case in cases}
         report = {case: job.result() for case, job in jobs.items()}
     summary = json.dumps(report, indent=2)
     (args.out / 'summary.json').write_text(summary + '\n')

@@ -230,6 +230,13 @@ def test_commit_in_ssi_playback(commit_image, tmp_path, case):
 
 
 @pytest.mark.slow
+def test_copy_settings_preserves_stock_sound_sequence_and_clipboard(commit_image, tmp_path):
+    from emu_genseq_settings_copy import run
+    image, _ = commit_image
+    run(image, tmp_path)
+
+
+@pytest.mark.slow
 @pytest.mark.parametrize('case', ['gen-300-s0', 'gen-120-s1', 'gen-300-s6',
                                  'gen-30', 'gen-swing', 'gen-prearmed',
                                  'gen-resume', 'gen-anchor', 'gen-silent', 'seq-300', 'fill-300'])

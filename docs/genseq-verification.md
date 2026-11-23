@@ -3,6 +3,67 @@
 The hardware-tested 0.4.1 baseline is commit `45268db`. The experiments below
 use Digitone II OS 1.11 and run outside that checkpoint.
 
+## 0.4.17 working-kit repair
+
+A named project loaded correctly from a hardware backup, but its active
+pattern reopened at GEN SEQ defaults after a power cycle. Another configured
+pattern in the same project survived. The original named project records
+both had valid checksums.
+
+The emulator reproduced the loss after a named project load, a stock
+working-state flash write, and a cold boot from the written bank. The MIDI
+kit converter cleared four bytes at working-kit offset `0x1748` while
+mirroring the active pattern. Those bytes hold track 2's seeds. The clear
+changed the record checksum, so cold boot rejected the entire pattern.
+
+The persistence build guards the clear at `0x400dce06` for the reserved
+word in pattern kits in the working image that carry GEN SEQ data. The
+project record format stays at schema 3. The flash regression configures
+track 2 before running the stock kit converter and reading back the bank.
+For an already affected working pattern, load the intact named project
+or reload that pattern from the project before checking the next reboot.
+
+The comparison pattern survived because its track 2 seed word was already
+zero. The emulator trace records the same clear for both patterns. The
+affected pattern contained nonzero seeds even though GEN SEQ mode was OFF
+on track 2. Changing those bytes invalidated the checksum for all 16 tracks.
+
+A stock OS 1.11 kit-converter probe filled the destination with `0xa5` and
+`0x5a` in separate runs and used converter flags 0 and 1. Among the four
+GEN SEQ ranges, only `0x1748..0x174b` changed in any run. This checks the
+converter's writes. It does not cover every stock edit or later OS version.
+On the combined 0.4.17 image, all nine persistence operation cases passed.
+They cover track and pattern copy, paste, clear and undo, TEMP restore,
+preset replacement, and working-state flash readback and cold boot.
+The separate 0.4.17 build with LFO4 passed the stock save/load round trip
+for all 128 kits, the working-bank cold boot, and clearing a reused project
+buffer. The round trip checked LFO4 values and stock trigs alongside GEN SEQ.
+
+### All-track canary audit
+
+The persistence harness has a `--canary` mode. It creates a disposable bank
+with different GEN SEQ settings and nonzero seeds on all 16 tracks in each of
+two patterns. It checks the four storage ranges, the checksum and live track
+settings. Copy, clear, and undo checks allow only the intended destination
+to change. A separate stock-edit check compares both complete records after
+trig editing, AMP editing, AMP page paste and clear, pattern switching,
+playback and Save Project As.
+
+All nine canary cases passed on the 0.4.17 combined build. In the flash case,
+both patterns restored all 16 tracks from the written bank. The same flash
+case on 0.4.16 caught the four-byte seed overwrite at logical offsets
+`0x3c..0x3f`. The audit compares state at operation boundaries. The separate
+stock converter probe also checks the reserved bytes with nonzero markers.
+
+```sh
+.venv/bin/python scripts/emu_genseq_persist_ops.py "$image" "$working_bank" \
+  --canary --without-lfo4 --out out/genseq/persistence-canary
+```
+
+Use the OS 1.11 combined persistence image and a synthetic working bank from
+`emu_genseq_persist.py --cold`. Leave off `--without-lfo4` when running against
+the corresponding LFO4 image and fixture.
+
 The owner accepted 0.4.15 as a beta checkpoint on 2026-11-22. The
 [hardware checklist](genseq-beta-hardware-checklist.md) records the exact image
 and pending instrument checks. The extreme synthetic ANC case does not block

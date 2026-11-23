@@ -197,15 +197,23 @@ void gseq_page_title(void *view, enum gseq_page page)
 
 void gseq_draw_actions(void *view, void *canvas, enum gseq_action action)
 {
-    static const char *const names[] = {"NEW RHYTHM", "NEW PHRASE", "COMMIT TO PATTERN"};
+    static const char *const names[] = {
+        "NEW RHYTHM", "NEW PHRASE", "COMMIT TO PATTERN", "COPY SETTINGS", "PASTE SETTINGS"
+    };
+    unsigned first = action >= ACTION_COPY ? ACTION_COUNT - 3 : 0;
     RECT(canvas, 15, 0, 127, 53, 0);
     LEVEL(view, canvas, 0);
-    for (unsigned i = 0; i < ACTION_COUNT; ++i) {
-        int y = 38 - 14 * i;
-        if (action == i)
+    for (unsigned row = 0; row < 3; ++row) {
+        int y = 38 - 14 * row;
+        if (action == first + row)
             OUTLINE(canvas, 24, y - 3, 120, y + 10, 1);
-        TEXT(canvas, VALUE_FONT, 72, y, CENTRED, "%s", names[i]);
+        TEXT(canvas, VALUE_FONT, 72, y, CENTRED, "%s", names[first + row]);
     }
+}
+
+void gseq_settings_message(void *view, const char *message)
+{
+    STOCK_MESSAGE(STATUS(view), "%s", message);
 }
 
 void gseq_action_message(void *view, enum gseq_action action, bool applied)

@@ -5,7 +5,9 @@
 #include "commit.h"
 
 enum gseq_page { PAGE_TRIG, PAGE_PHRASE, PAGE_GEN, PAGE_PITCH, PAGE_MELODY, PAGE_COUNT };
-enum gseq_action { ACTION_RHYTHM, ACTION_PHRASE, ACTION_COMMIT, ACTION_COUNT };
+enum gseq_action {
+    ACTION_RHYTHM, ACTION_PHRASE, ACTION_COMMIT, ACTION_COPY, ACTION_PASTE, ACTION_COUNT
+};
 enum { GSEQ_HISTORY = 16 };
 
 /* Screen-space data. Comparing two plots compares visible marks, including
@@ -22,6 +24,7 @@ void gseq_draw_actions(void *view, void *canvas, enum gseq_action action);
 void gseq_draw_capture(void *view, void *canvas, const struct gseq_capture *capture,
                         unsigned pattern, unsigned track, bool confirm, const char *message, unsigned trigs, bool undo);
 void gseq_action_message(void *view, enum gseq_action action, bool applied);
+void gseq_settings_message(void *view, const char *message);
 unsigned gseq_control_for(enum gseq_page page, unsigned encoder);
 bool gseq_control_active(const struct gseq_track *cfg, unsigned field);
 void gseq_value_message(void *view, enum gseq_page page, unsigned encoder,

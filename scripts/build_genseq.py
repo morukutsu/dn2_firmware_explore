@@ -20,7 +20,7 @@ from dnfw.patch import area, cbuild
 from build_scale_degrees import scales
 
 STOCK = ROOT / "elektron_binaries/Digitone_II_OS1.11.syx"
-VERSION = "0.4.15-dev"
+VERSION = "0.4.17-dev"
 CODE = 0x46F20000
 SOURCES = [ROOT / "csrc/genseq" / name for name in
            ("prototype.c", "ui.c", "melody.c", "rhythm.c", "schedule.c", "format.c", "commit.c", "stock_seq.c", "stock_seq.S", "hooks.S")]
@@ -48,6 +48,7 @@ PERSISTENCE_CALLS = (
     (0x4006A47C, "4eb940052824", "gseq_track_undo"),
     (0x4006A560, "4eb940052824", "gseq_track_undo"),
     (0x4003FF94, "4eb9400dde44", "gseq_save_pattern_kit"),
+    (0x400DCE06, "4eb9401344d8", "gseq_clear_midi_kit_reserved"),
 )
 
 
