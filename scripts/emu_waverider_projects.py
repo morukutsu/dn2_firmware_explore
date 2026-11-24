@@ -17,6 +17,7 @@ After each step the records are read back over /wavepool, and wr_projects is pee
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import struct
@@ -30,8 +31,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from dnfw.waverider import poolrecord as PR                         # noqa: E402
 from emu_waverider_rename import Frames, dec                        # noqa: E402
 from emu_waverider_wavepool import container                        # noqa: E402
+from emu_seqplay import panel_drive                                # noqa: E402
 
-PANEL = ROOT.parent / "digikit-rust/out/native/target-host/release/examples/panel_drive.exe"
 ROUTER = ["--call-at", "0x4002e464", "--call-fn", "0x4012166e", "--call-args", "2",
           "--capture", "0x401233f2:0:1"]
 NO, SETTINGS, YES, UP, DOWN = 12, 8, 10, 11, 14
@@ -67,7 +68,8 @@ def load(row, tag):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("build")
-    ap.add_argument("--card", default=str(ROOT / "out/dk-dn2-card.img"))
+    ap.add_argument("--card", help="optional eMMC image, default uses the runner's sparse card")
+    ap.add_argument("--stock", type=pathlib.Path, default=ROOT / "elektron_binaries/Digitone_II_OS1.11.syx")
     ap.add_argument("--out", default=str(ROOT / "out/wrprojects"))
     a = ap.parse_args()
     out = pathlib.Path(a.out)
@@ -76,7 +78,7 @@ def main() -> int:
     projects_at = layout["wr_projects"]
 
     f = Frames()
-    steps: list[str] = ["tap:12", "wait:30M"]
+    steps: list[str] = ["wait:180M", "tap:12", "wait:30M"]
     reads: dict[str, int] = {}                     # label -> index of its open in f.lines
 
     def api_write(label, p, entries, follows_store=False):
@@ -117,7 +119,10 @@ def main() -> int:
 
     steps_file = out / "steps.txt"
     steps_file.write_text("\n".join(steps) + "\n")
-    r = subprocess.run([str(PANEL), a.build, "--card-image", a.card, "--out", str(out), *ROUTER,
+    card = ["--card-image", a.card] if a.card else []
+    r = subprocess.run([str(panel_drive()), a.build, *card, "--out", str(out), *ROUTER,
+                        "--base", hashlib.sha256(a.stock.read_bytes()).hexdigest(),
+                        "--watch", "0x4011ea6a",
                         "--regs-at", "0x400f6960,0x400f6a2c", "--steps", f"@{steps_file}"],
                        capture_output=True, text=True, timeout=3600)
     report = json.loads(r.stdout.strip().splitlines()[-1])

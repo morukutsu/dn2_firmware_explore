@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="768" height="384" viewBox="0 0 128 64" role="img" aria-labelledby="title desc">
+  <title id="title">Digitone II live LFO indicator mockup</title>
+  <desc id="desc">A stock-style LFO page with a thin vertical rail in the measured left gutter, a centre mark, a moving dot, and a dotted sweep band.</desc>
+  <rect width="128" height="64" fill="#000"/>
+  <g fill="#fff" font-family="monospace" font-size="5" font-weight="700">
+    <text x="1" y="7">LFO1 PREVIEW</text>
+    <text x="1" y="14">LFO</text>
+    <text x="2" y="20">1</text>
+    <text x="25" y="13">SPD</text>
+    <text x="51" y="13">MULT</text>
+    <text x="78" y="13">FADE</text>
+    <text x="103" y="13">DEST</text>
+    <text x="25" y="34">WAVE</text>
+    <text x="51" y="34">SPH</text>
+    <text x="78" y="34">MODE</text>
+    <text x="103" y="34">DEP</text>
+  </g>
+  <g fill="none" stroke="#fff" stroke-width="1" shape-rendering="crispEdges">
+    <rect x="0.5" y="11.5" width="13" height="24"/>
+    <rect x="0.5" y="39.5" width="13" height="16"/>
+    <circle cx="34" cy="23" r="8"/>
+    <rect x="51" y="16" width="15" height="12"/>
+    <rect x="78" y="16" width="15" height="12"/>
+    <rect x="103" y="16" width="23" height="12"/>
+    <circle cx="34" cy="46" r="8"/>
+    <path d="M52 48 l3 -4 l3 6 l3 -8 l3 6"/>
+    <rect x="78" y="40" width="15" height="12"/>
+    <circle cx="113" cy="46" r="8"/>
+  </g>
+  <g stroke="#aaa" shape-rendering="crispEdges">
+    <path d="M18 13 V57" stroke-width="1"/>
+    <path d="M16 35 H20" stroke-width="1"/>
+    <path d="M18 24 H18" stroke="#fff" stroke-width="3"/>
+    <path d="M18 28 H18 M18 32 H18 M18 38 H18 M18 42 H18 M18 46 H18" stroke-width="1"/>
+  </g>
+  <g fill="#fff" font-family="monospace" font-size="3.5">
+    <text x="2" y="62">dot = heard now</text>
+    <text x="73" y="62">rail = recent sweep</text>
+  </g>
+</svg>

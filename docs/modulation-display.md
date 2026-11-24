@@ -1,5 +1,9 @@
 # Showing modulation on the controls (UI/UX study)
 
+The focused follow-up for a live indicator on the selected LFO page is in
+[`lfo-preview-research.md`](lfo-preview-research.md). It contains the direct
+evaluator probe, measured gutter, redraw rule, mockup and owner-run test.
+
 **The idea (owner, 2026-10-01).** LFO modulation is invisible on the Digitone II: the controls show the value you set and never move. Only MIDI modulation moves them, because it changes the value itself, and that is what we don't want. You need to see and tweak the value you set, and also see how the modulation moves it. This is a study of how to draw that on each kind of control without disturbing how it shows the value you set.
 
 Live mockups of every option: https://claude.ai/artifact/GUC8G2HWWx4sjhPZjVKc4g (the page simulates one LFO with a set value, a depth, a speed and a wave).

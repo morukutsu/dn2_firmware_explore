@@ -21,6 +21,22 @@ emulator kept INTFRC as RAM and delivered only PIT, DTIM and SSI vectors; digiki
 
 ## How it runs
 
+The Rust runner can be built on macOS. From this firmware checkout, with
+`digikit-main` alongside it, run:
+
+```sh
+CARGO_TARGET_DIR="$PWD/out/digikit-target" cargo build \
+  --manifest-path ../digikit-main/Cargo.toml --locked --release \
+  -p elektron-native-boot --example panel_drive
+.venv/bin/python scripts/emu_seqplay.py elektron_binaries/Digitone_II_OS1.11.syx
+```
+
+Set `PANEL_DRIVE` to use a runner from another directory. Pass `--base
+STOCK.syx` when the tested image is patched. New playback tests can use
+`emulib.playback.run` with panel steps, a fault address and frame capture
+specifications. It saves the panel steps, runner report and screen captures
+under the test's output directory.
+
 1. `panel_drive BUILD --ssi-hz 96000` boots from reset and dismisses the start popup.
 2. RECORD (code 19), the trig keys (25 is step 1), RECORD again: trigs on track 1. Without RECORD
    a trig key only plays the note.

@@ -1,0 +1,75 @@
+{
+  "os": "Digitone II 1.11",
+  "snapshot": "boot400M.snap",
+  "captured_on": "2026-11-14",
+  "prototype": "lfopreview-0.1.9",
+  "manual_evaluator_step": true,
+  "normal_playback": false,
+  "frames_per_case": 64,
+  "cases": 18,
+  "frames_compared": 1152,
+  "engine_outputs_identical": true,
+  "preview_samples_valid": 1152,
+  "non_negative_preview_samples_matching_isolated_output": 1088,
+  "negative_depth": {
+    "hook_site": "0x40137ab4",
+    "depth_cell": "0x2000",
+    "hook_value_first_nonzero": "0x0418926b",
+    "destination_after_clamp": "0x7f00",
+    "interpretation": "stock pre-accumulation arithmetic case, retained raw by prototype"
+  },
+  "addresses": {
+    "evaluator_a": "0x40137726",
+    "evaluator_b_midi": "0x401373dc",
+    "contribution_hook": "0x40137ab4",
+    "frame_hook": "0x40025e82",
+    "selected_page_view_vtable": "0x40205614",
+    "selected_page_index_offset": 144,
+    "renderer": "0x4006448a",
+    "dirty_poll": "0x4002e464",
+    "state_a": "0x4463fc18",
+    "state_b_midi": "0x4463f498",
+    "voice_owner_map": "0x80005308",
+    "voice_sound_map": "0x800052a8",
+    "live_kit_pointer": "0x800052a0",
+    "target_array": "0x80003af0",
+    "mirror_prefix": 34,
+    "mirror_stride": 202,
+    "state_track_stride": 120,
+    "state_record_stride": 40,
+    "state_output_offset": 4
+  },
+  "geometry": {
+    "rail_x": 18,
+    "rail_top": 13,
+    "rail_bottom": 57,
+    "centre": 35,
+    "dot": "3x3"
+  },
+  "redraw": {
+    "ui_ticks_per_second": 120,
+    "minimum_ticks": 5,
+    "maximum_requests_per_second": 24,
+    "off_page_requests": 0,
+    "unchanged_pixel_requests": 0
+  },
+  "cost": {
+    "stock_evaluator_a_instructions": 9216,
+    "prototype_evaluator_a_instructions": 12288,
+    "added_evaluator_a_instructions": 3072,
+    "prototype_owned_instructions": 3168,
+    "code_bytes": 2832,
+    "packed_code_chunk_bytes": 2848,
+    "bss_bytes": 7720,
+    "owned_bytes": 5935,
+    "standalone_lfo1_rail_draw_instructions": 1223,
+    "standalone_lfo2_rail_draw_instructions": 1013,
+    "standalone_lfo3_rail_draw_instructions": 1016
+  },
+  "deferred": [
+    "MIDI evaluator B",
+    "LFO4 state and page hook",
+    "browser packaging",
+    "owner instrument test"
+  ]
+}

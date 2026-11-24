@@ -121,10 +121,11 @@ def _all(payload: bytes, head: bytes) -> list[int]:
     return out
 
 
-def fill(payload: bytes, mods: list[tuple[str, int]], tag: str, commit: str, os: str) -> bytes:
+def fill(payload: bytes, mods: list[tuple[str, int]], tag: str, commit: str, os: str,
+         *, replace_existing: bool = False) -> bytes:
     """PAYLOAD (MAIN OS, every mod applied) with its /modinfo record written; unchanged
     when it carries none."""
-    start = locate(payload)
+    start = find(payload) if replace_existing else locate(payload)
     if start is None:
         return payload
     size = size_at(payload, start)

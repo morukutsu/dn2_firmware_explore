@@ -204,8 +204,11 @@ def build(sources: list[Path], *, base: int, entries: list[str] = (),
         script = d / "link.ld"
         script.write_text(LINKER_SCRIPT.format(base=base), newline="\n")
         elf = d / "out.elf"
+        # Keep the committed m68k-linux-gnu image stable. Newer binutils can relax
+        # absolute jumps into PC-relative forms, which changes the Waverider bytes.
         r = tool.run(tool.gcc, [f"-mcpu={CPU}", "-nostdlib", "-static", "-Wl,--no-warn-rwx-segments",
-                                "-Wl,--gc-sections", *(f"-Wl,--undefined={e}" for e in entries),
+                                "-Wl,--gc-sections", "-Wl,--no-relax",
+                                *(f"-Wl,--undefined={e}" for e in entries),
                                 "-T", tool.path_for(script), *objects,
                                 "-lgcc", "-o", tool.path_for(elf)])
         if r.returncode:
