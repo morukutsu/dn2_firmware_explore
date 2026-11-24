@@ -10,16 +10,18 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from dnfw.cli.files import read_image
+from dnfw.cli.mods import _staged
 from dnfw.firmware import build as fwbuild
 from dnfw.firmware.load import load
 from dnfw.firmware.verify import verify
-from dnfw.mods import Extent, platform, undeclared_writes
+from dnfw.mods import Extent, modinfo, modspage, platform, undeclared_writes
 from dnfw.osport import versions
 from dnfw.patch.assemble import assemble
 from dnfw.patch.coldfire import jmp_abs
 
 BASE = 0x40000400
 SECTION = 3
+VERSION = "0.1.0-dev"
 CODE = 0x467E8000
 TAG_SITE = 0x4002F500
 DEADLINE_SITE = 0x400DA584
@@ -73,29 +75,50 @@ def patch(content: bytes) -> bytes:
     return result
 
 
+def build(source: Path, target: Path) -> Path:
+    firmware = load(read_image(source))
+    section = firmware.container.find(SECTION)
+    if firmware.envelope.device != 0x15 or section is None:
+        raise ValueError("the input must be a Digitone II firmware image")
+    content = section.unpack()
+    if content is None:
+        raise ValueError("MAIN OS could not be unpacked")
+    result = patch(content)
+
+    page_rows = modspage.existing(firmware)
+    if page_rows:
+        rows = [*page_rows, ("MIDI SYNC", VERSION.upper())]
+        result = modspage.apply(_staged(firmware, {SECTION: result}), rows).payloads[SECTION]
+    at = modinfo.find(content)
+    if at is not None:
+        info = modinfo.parse(modinfo.record(content, at))
+        if not info["ok"]:
+            raise ValueError("input has an invalid /modinfo record")
+        _, chunks = platform.split(result)
+        code = next(chunk for kind, chunk in chunks
+                    if kind == platform.area.CODE and platform.area.CodeChunk.unpack(chunk).load == CODE)
+        mods = [*info["mods"], ("midisync", modinfo.xxh32(code))]
+        tag = "genseq-midisync" if any(mid == "genseq" for mid, _ in mods) else "midisync"
+        result = modinfo.fill(result, mods, tag, info["commit"], "1.11", replace_existing=True)
+
+    image = fwbuild.build(firmware, {SECTION: fwbuild.replacement(firmware, SECTION, result)})
+    failures = [check.name for check in verify(load(image)).checks if not check.ok]
+    if failures:
+        raise ValueError("firmware verification failed: " + ", ".join(failures))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(image)
+    return target
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("image", type=Path)
     parser.add_argument("-o", "--out", required=True, type=Path)
     args = parser.parse_args()
-    firmware = load(read_image(args.image))
-    section = firmware.container.find(SECTION)
     try:
-        if firmware.envelope.device != 0x15 or section is None:
-            raise ValueError("the input must be a Digitone II firmware image")
-        content = section.unpack()
-        if content is None:
-            raise ValueError("MAIN OS could not be unpacked")
-        result = patch(content)
-        image = fwbuild.build(firmware, {SECTION: fwbuild.replacement(firmware, SECTION, result)})
-        failures = [check.name for check in verify(load(image)).checks if not check.ok]
-        if failures:
-            raise ValueError("firmware verification failed: " + ", ".join(failures))
+        print(build(args.image, args.out))
     except ValueError as exc:
         parser.exit(1, f"{exc}\n")
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_bytes(image)
-    print(args.out)
 
 
 if __name__ == "__main__":

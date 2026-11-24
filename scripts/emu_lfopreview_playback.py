@@ -12,6 +12,7 @@ from emulib import paths, playback
 
 sys.path.insert(0, str(paths.ROOT / "src"))
 from dnfw import seqframes
+from dnfw.mods import lfopreview
 
 SAMPLES = 48
 INTERVAL = 5_000_000
@@ -104,15 +105,18 @@ def main():
     parser.add_argument("--stock", type=Path,
                         default=paths.ROOT / "elektron_binaries/Digitone_II_OS1.11.syx")
     parser.add_argument("--out", type=Path, default=paths.ROOT / "out/lfopreview/playback")
-    parser.add_argument("--symbols", type=Path, help="defaults to symbols.json beside the image")
+    parser.add_argument("--symbols", type=Path, help="use symbols for a custom LFO Preview payload")
     parser.add_argument("--page", type=int, choices=(1, 2, 3), default=1)
     parser.add_argument("--control", type=Path, help="compare against this build instead of stock")
     parser.add_argument("--waverider", action="store_true", help="select and assert Waverider type 5")
     parser.add_argument("--chord", action="store_true", help="play a chord on step 1 in TRIG mode")
     args = parser.parse_args()
-    symbols = json.loads((args.symbols or args.image.with_name("symbols.json")).read_text())
-    signature_address = int(symbols["drawn_signature"], 16)
-    shown_lfo = int(symbols["shown_lfo"], 16)
+    symbols = (json.loads(args.symbols.read_text()) if args.symbols
+               else lfopreview.SPEC["code"]["symbols"])
+    signature = symbols["drawn_signature"]
+    page = symbols["shown_lfo"]
+    signature_address = int(signature, 16) if isinstance(signature, str) else signature
+    shown_lfo = int(page, 16) if isinstance(page, str) else page
     probe = (f"peek:{signature_address:#x}:4", f"peek:{shown_lfo:#x}:1")
     out = args.out.resolve()
     runner = playback.find_runner()

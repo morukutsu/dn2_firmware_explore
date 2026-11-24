@@ -41,9 +41,13 @@ Before you do this, keep a copy of the project.
 | `sendloop` | The DSP frame send copies each frame with a shorter loop: the same frame, about 4 points of a frame less load on the main processor ([how](docs/sendloop.md)) | confirmed on hardware (OS 1.11) | yes |
 | `songguard` | A song with a damaged row count loads as empty instead of halting the instrument (a stock bug) | confirmed on hardware | no |
 | `lfolength` | The LFO ONE/HALF fix: TRIG MODE ONE and HALF run one cycle / half a cycle from the start phase and hold the value they reached, on audio and MIDI tracks (two stock bugs; supersedes `lfohold`) | confirmed on hardware (2026-10-09, audio track); MIDI tracks in the emulator | yes |
-| `lfopreview` | Developer prototype: a live signed LFO1-3 contribution rail on the selected synth LFO page | emulator only; not for an instrument | no |
+| `lfopreview` | Developer prototype: a live signed LFO1-3 contribution rail on the selected synth LFO page | developer build, tested on hardware | no |
 | `waverider` | A sixth synth machine: two wavetable oscillators with MOVE, a sub-oscillator and noise, with tables from the +Drive (alpha) | alpha, confirmed on hardware (2026-10-14) | yes |
 | ~~`lfohold`~~ | Superseded by `lfolength` (2026-10-09): the hold, audio tracks only. Kept in the tree for the record, not offered | confirmed on hardware (2026-10-08) | no |
+
+**Developer build.** The OS 1.11 combined build includes GEN SEQ, MIDI Pattern
+Sync, LFO Preview and Waverider. See the [build and test instructions](docs/dn2-combined-build.md),
+the [GEN SEQ guide](docs/genseq-manual.md) and the [MIDI Pattern Sync notes](docs/midi-pattern-sync.md).
 
 **Combining them.** `dnfw mods matrix` tries each pair in both orders. The command
 writes the result into `docs/mods-compatibility.md` and the site. Most pairs combine

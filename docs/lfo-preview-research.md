@@ -1,8 +1,9 @@
 # LFO preview prototype
 
 This note records the `lfopreview` developer prototype for Digitone II OS 1.11.
-This prototype runs only in the emulator. The prototype does not flash an instrument. MIDI, LFO4 and browser
-packaging are later stages.
+The initial tests below used the emulator. Later developer builds were also
+tested on hardware. See the [combined build instructions](dn2-combined-build.md)
+for the current OS 1.11 build. The rail covers synth LFO1–3.
 
 ## Result
 

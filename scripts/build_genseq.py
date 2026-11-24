@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import struct
 import sys
@@ -11,15 +12,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from dnfw.cli.files import read_image
+from dnfw.cli.mods import _staged
 from dnfw.container.section import compress
 from dnfw.firmware import build as fwbuild
 from dnfw.firmware.load import load
-from dnfw.mods import RAM, Extent, check_compatible, lfopreview, modinfo, platform, ramcheck
+from dnfw.mods import RAM, Extent, check_compatible, lfopreview, modinfo, modspage, platform, ramcheck
 from dnfw.osport.versions import identify
 from dnfw.patch import area, cbuild
 from build_scale_degrees import scales
 
-STOCK = ROOT / "elektron_binaries/Digitone_II_OS1.11.syx"
+STOCK = Path(os.environ.get("DT2_SYX", ROOT / "elektron_binaries/Digitone_II_OS1.11.syx"))
 VERSION = "0.4.17-dev"
 CODE = 0x46F20000
 SOURCES = [ROOT / "csrc/genseq" / name for name in
@@ -96,6 +98,7 @@ def build(stock: Path, out: Path, *, collision_probe: bool = False,
     defines["GSEQ_SCALE_MASKS"] = scale_masks
     linked = cbuild.build(sources, base=CODE, entries=entries, defines=defines)
     chunks = []
+    page_rows = []
     base_image = waverider_preview_base or lfo4_base
     if base_image is not None:
         if lfo4_base is not None:
@@ -115,6 +118,9 @@ def build(stock: Path, out: Path, *, collision_probe: bool = False,
         staged_main = section.unpack()
         base, chunks = platform.split(staged_main)
         code_addresses = {area.CodeChunk.unpack(chunk).load for kind, chunk in chunks if kind == area.CODE}
+        page_rows = modspage.existing(firmware)
+        if page_rows:
+            required.add(modspage.CODE_VA)
         if code_addresses != required:
             raise ValueError(f"Unexpected CODE chunks in {base_image}")
         if waverider_preview_base is not None:
@@ -147,6 +153,9 @@ def build(stock: Path, out: Path, *, collision_probe: bool = False,
 
     chunk = area.CodeChunk(CODE, linked.image, linked.bss).pack()
     content = platform.join(bytes(image), [*chunks, (area.CODE, chunk)])
+    if page_rows:
+        rows = [*page_rows, ("GEN SEQ", VERSION.upper())]
+        content = modspage.apply(_staged(firmware, {section.id: content}), rows).payloads[section.id]
     if waverider_preview_base is not None:
         mods = [*info["mods"], ("genseq", modinfo.xxh32(chunk))]
         content = modinfo.fill(content, mods, f"genseq-{VERSION}-hw", info["commit"], "1.11",
