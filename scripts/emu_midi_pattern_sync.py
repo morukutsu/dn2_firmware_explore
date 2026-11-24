@@ -101,13 +101,14 @@ def register(event, bank, index):
     return int(event[bank][index], 16)
 
 
-def run(runner, stock, prototype, case, mode, out):
+def run(runner, stock, prototype, case, mode, out, control=None):
     out = out / case.label / mode
     out.mkdir(parents=True, exist_ok=True)
     steps = out / "steps.txt"
     steps.write_text("\n".join(fixture(case, mode)) + "\n")
-    base = ["--base", hashlib.sha256(stock.read_bytes()).hexdigest()] if mode == "patch" else []
-    cmd = [str(runner), str(prototype if mode == "patch" else stock), *base,
+    image = prototype if mode == "patch" else control or stock
+    base = ["--base", hashlib.sha256(stock.read_bytes()).hexdigest()] if image != stock else []
+    cmd = [str(runner), str(image), *base,
            "--ssi-hz", "96000", "--after", "35000000", "--out", str(out),
            "--steps", f"@{steps}", "--watch", f"{FAULT:#x}", "--regs-at",
            ",".join(f"{address:#x}" for address in (STEP, ARM, ACTIVATE, NOTE, ACCEPT, CLOCK_START))]
@@ -164,6 +165,7 @@ def main():
     parser.add_argument("--runner", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--control", type=Path, help="firmware with the same other mods and no MIDI sync patch")
     args = parser.parse_args()
 
     cases = [Case(length, offset, label)
@@ -179,7 +181,8 @@ def main():
                            else ("finite", "patch"))]
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futures = {(case.label, mode): pool.submit(run, args.runner.resolve(), args.stock.resolve(),
-                                                  args.prototype.resolve(), case, mode, args.out)
+                                                  args.prototype.resolve(), case, mode, args.out,
+                                                  args.control.resolve() if args.control else None)
                    for case, mode in probes}
         results = {label: task.result() for label, task in futures.items()}
 

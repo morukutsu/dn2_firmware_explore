@@ -23,13 +23,16 @@ the installed features.
 - [LFO Preview controls and emulator playback](lfo-preview-research.md)
 
 For the emulator, set `PANEL_DRIVE` to the built panel runner and `IMAGE`
-to the combined SysEx. Use the same stock SysEx as the build.
+to the combined SysEx. Set `CONTROL` to the intermediate
+`genseq-waverider-lfopreview-*-persist_DN2_1.11.syx` in the same directory.
+This gives the MIDI test both the same other mods and the same emulator workload.
+Use the original stock SysEx from the build for `STOCK`.
 
 ```sh
 DT2_SYX="$STOCK" python scripts/emu_genseq_settings_copy.py "$IMAGE"
 python scripts/emu_lfopreview_playback.py "$IMAGE" --stock "$STOCK" --page 2
 python scripts/emu_midi_pattern_sync.py "$STOCK" "$IMAGE" \
-  --runner "$PANEL_DRIVE" --out out/midi-pattern-sync-test
+  --control "$CONTROL" --runner "$PANEL_DRIVE" --out out/midi-pattern-sync-test
 ```
 
 Run the owner hardware checks for this combination before release.

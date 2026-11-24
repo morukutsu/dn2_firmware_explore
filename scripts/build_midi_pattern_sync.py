@@ -85,20 +85,22 @@ def build(source: Path, target: Path) -> Path:
         raise ValueError("MAIN OS could not be unpacked")
     result = patch(content)
 
+    at = modinfo.find(content)
+    info = modinfo.parse(modinfo.record(content, at)) if at is not None else None
+    if info is not None and not info["ok"]:
+        raise ValueError("input has an invalid /modinfo record")
+    tag = "genseq-midisync" if info and "genseq" in dict(info["mods"]) else "midisync"
     page_rows = modspage.existing(firmware)
     if page_rows:
+        if info is not None:
+            page_rows[:modspage.INFO_ROWS] = modspage.info(info["os"], tag, info["commit"])
         rows = [*page_rows, ("MIDI SYNC", VERSION.upper())]
         result = modspage.apply(_staged(firmware, {SECTION: result}), rows).payloads[SECTION]
-    at = modinfo.find(content)
-    if at is not None:
-        info = modinfo.parse(modinfo.record(content, at))
-        if not info["ok"]:
-            raise ValueError("input has an invalid /modinfo record")
+    if info is not None:
         _, chunks = platform.split(result)
         code = next(chunk for kind, chunk in chunks
                     if kind == platform.area.CODE and platform.area.CodeChunk.unpack(chunk).load == CODE)
         mods = [*info["mods"], ("midisync", modinfo.xxh32(code))]
-        tag = "genseq-midisync" if any(mid == "genseq" for mid, _ in mods) else "midisync"
         result = modinfo.fill(result, mods, tag, info["commit"], "1.11", replace_existing=True)
 
     image = fwbuild.build(firmware, {SECTION: fwbuild.replacement(firmware, SECTION, result)})

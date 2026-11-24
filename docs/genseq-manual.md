@@ -7,7 +7,7 @@ This version follows the 0.4.15 beta checkpoint. Hardware confirmation is pendin
 
 GEN SEQ makes melodies on synth tracks. Use SEQ to keep the rhythm you programmed, FILL to add notes in its gaps, or GEN to generate the rhythm as well. Each track has its own settings for each pattern.
 
-This guide describes the **-persist** build, which saves settings in the project. GEN SEQ supports synth tracks. MIDI-track generation is unavailable in this version. COMMIT TO PATTERN converts one captured track cycle to ordinary stock trigs.
+This guide describes the [combined build](dn2-combined-build.md), which saves settings in the project. GEN SEQ supports synth tracks. MIDI-track generation is unavailable in this version. COMMIT TO PATTERN converts one captured track cycle to ordinary stock trigs.
 
 ## Open GEN SEQ
 
