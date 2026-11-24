@@ -111,6 +111,7 @@ MENU_NAMES = {
     "lfo4": "LFO 4",
     "lfohold": "LFO HOLD",
     "lfolength": "LFO LENGTH",
+    "lfopreview": "LFO PREVIEW",
     "lfowaves": "LFO WAVES",
     "midiarp": "MIDI ARP",
     "moddest": "MOD DEST",

@@ -156,8 +156,13 @@ def note_name(n: int) -> str:
 
 def table_html(head: list[str], rows: list[list], cls: str = "") -> str:
     th = "".join(f"<th>{html.escape(h)}</th>" for h in head)
-    body = "".join("<tr>" + "".join(f'<td{" class=\"num\"" if isinstance(c, (int, float)) or re.fullmatch(r"[-+0-9.,% x]+( [a-zA-Z]+)?", str(c)) else ""}>{html.escape(str(c))}</td>' for c in r) + "</tr>"
-                   for r in rows)
+    def cell(value):
+        text = str(value)
+        numeric = isinstance(value, (int, float)) or re.fullmatch(r"[-+0-9.,% x]+( [a-zA-Z]+)?", text)
+        style = ' class="num"' if numeric else ""
+        return f"<td{style}>{html.escape(text)}</td>"
+
+    body = "".join("<tr>" + "".join(cell(value) for value in row) + "</tr>" for row in rows)
     return f'<div class="scroll"><table{" class=" + chr(34) + cls + chr(34) if cls else ""}><thead><tr>{th}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
